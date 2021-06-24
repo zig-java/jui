@@ -8,6 +8,11 @@ public final class JNIExample {
     public static native String greet();
 
     public static void main(String[] args) {
-        System.out.println(greet());
+        try {
+            System.out.println(greet());
+        } catch (Exception e) {
+            System.out.println("Big bad Zig error handled in Java >:(");
+            e.printStackTrace();
+        }
     }
 }
