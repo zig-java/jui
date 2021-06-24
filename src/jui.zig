@@ -38,8 +38,8 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@typeIn
     if (se.error_set) |set| {
         return @call(.{}, function, args) catch |err| {
             var buf: [512]u8 = undefined;
-            var msg = std.fmt.bufPrint(&buf, "Zig Error Encountered: {s}", .{err}) catch unreachable;
-            env.throwGeneric(@ptrCast([*c]const u8, msg)) catch unreachable;
+            var msg = std.fmt.bufPrintZ(&buf, "Zig Error Encountered: {s}", .{err}) catch unreachable;
+            env.throwGeneric(msg) catch unreachable;
             return null;
         };
     } else {

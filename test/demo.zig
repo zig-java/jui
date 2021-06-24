@@ -9,9 +9,8 @@ fn greet(env: *jui.JNIEnv, class: jui.jclass) !jui.jstring {
     var buf: [256]u8 = undefined;
     var jni_version = try env.getJNIVersion();
 
-    var out = try std.fmt.bufPrint(&buf, "Hello from Zig v{} running in {s}", .{ std.builtin.zig_version, jni_version });
-    buf[out.len] = 0;
-    return env.newStringUTF(@ptrCast([*c]const u8, &buf));
+    var out = try std.fmt.bufPrintZ(&buf, "Hello from Zig v{} running in {s}", .{ std.builtin.zig_version, jni_version });
+    return env.newStringUTF(out);
 }
 
 comptime {
