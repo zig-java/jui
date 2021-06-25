@@ -124,8 +124,12 @@ pub const jobjectRefType = enum {
 pub const jni_false: jboolean = 0;
 pub const jni_true: jboolean = 1;
 
+// The new error handling model for jui is simple:
+// 1. Handle known errors/exceptions mentioned in the JNI as Zig errors
+// 2. Handle userland or unknown errors/exceptions separately
+
 /// Errors are negative jints; 0 indicates success
-pub const JNIError = error{
+pub const JNIFailureError = error{
     /// Unknown error; value of -1
     Unknown,
     /// Thread detached from the VM; value of -2
@@ -138,11 +142,6 @@ pub const JNIError = error{
     VMAlreadyExists,
     /// Invalid arguments; value of -6
     InvalidArguments,
-};
-
-/// Returned when a userland exception occurs
-pub const ExceptionError = error{
-    Exception,
 };
 
 pub const JNINativeMethod = extern struct {
@@ -401,13 +400,15 @@ const JNIInvokeInterface = extern struct {
     AttachCurrentThreadAsDaemon: fn ([*c]JavaVM, [*c]?*c_void, ?*c_void) callconv(JNICALL) jint,
 };
 
-fn handleError(return_val: jint) JNIError!void {
+fn handleFailureError(return_val: jint) JNIFailureError!void {
     if (return_val < 0 and return_val >= -6) {
-        inline for (comptime std.meta.fields(JNIError)) |err, i| {
+        inline for (comptime std.meta.fields(JNIFailureError)) |err, i| {
             if (i == -return_val - 1)
-                return @field(JNIError, err.name);
+                return @field(JNIFailureError, err.name);
         }
     }
+
+    if (return_val < 0) return JNIFailureError.Unknown;
 }
 
 pub const JNIEnv = extern struct {
@@ -415,46 +416,119 @@ pub const JNIEnv = extern struct {
 
     interface: *const JNINativeInterface,
 
+    // Utils
+
+    fn getClassNameOfObject(self: *Self, obj: jobject) jstring {
+        var cls = self.interface.GetObjectClass(self, obj);
+
+        // First get the class object
+        var mid = self.interface.GetMethodID(self, cls, "getClass", "()Ljava/lang/Class;");
+        var clsObj = self.interface.CallObjectMethod(self, obj, mid);
+
+        // Now get the class object's class descriptor
+        cls = self.interface.GetObjectClass(self, clsObj);
+
+        // Find the getName() method on the class object
+        mid = self.interface.GetMethodID(self, cls, "getName", "()Ljava/lang/String;");
+
+        // Call the getName() to get a jstring object back
+        var strObj = self.interface.CallObjectMethod(self, clsObj, mid);
+        return strObj;
+    }
+
+    /// Handles a known error
+    /// Only use this if you're 100% sure an error/exception has occurred
+    fn handleKnownError(self: *Self, comptime Set: type) Set {
+        var throwable = self.getPendingException();
+        defer self.clearPendingException();
+
+        var name_str = self.getClassNameOfObject(throwable);
+
+        var name = self.interface.GetStringUTFChars(self, name_str, null);
+        defer self.interface.ReleaseStringUTFChars(self, name_str, name);
+
+        var n = std.mem.span(@ptrCast([*:0]const u8, name));
+        var eon = n[std.mem.lastIndexOf(u8, n, ".").? + 1 ..];
+
+        var x = std.hash.Wyhash.hash(0, eon);
+
+        var final = @field(Set, comptime std.meta.fields(Set)[0].name);
+
+        inline for (comptime std.meta.fields(Set)) |err| {
+            var z = std.hash.Wyhash.hash(0, err.name);
+            if (x == z) final = @field(Set, err.name);
+        }
+
+        return final;
+    }
+
     pub const JNIVersion = struct {
         minor: u16,
         major: u16,
     };
 
     /// Gets the JNI version (not the Java version!)
-    pub fn getJNIVersion(self: *Self) JNIError!JNIVersion {
+    pub fn getJNIVersion(self: *Self) JNIVersion {
         var version = self.interface.GetVersion(self);
-        try handleError(version);
-
         return @bitCast(JNIVersion, version);
     }
+
+    pub const DefineClassError = error{
+        ClassFormatError,
+        ClassCircularityError,
+        OutOfMemoryError,
+        SecurityException,
+    };
 
     /// Takes a ClassLoader and buffer containing a classfile
     /// Buffer can be discarded after use
     /// The name is always null as it is a redudant argument
-    pub fn defineClass(self: *Self, loader: jobject, buf: []const u8) ExceptionError!jclass {
+    pub fn defineClass(self: *Self, loader: jobject, buf: []const u8) DefineClassError!jclass {
         var maybe_class = self.interface.DefineClass(self, null, loader, @ptrCast([*c]const jbyte, buf), @intCast(jsize, buf.len));
-        if (maybe_class) |class| {
-            return class;
-        } else {
-            return ExceptionError.Exception;
-        }
+        return if (maybe_class) |class|
+            class
+        else
+            return self.handleKnownError(DefineClassError);
+    }
+
+    pub const FindClassError = error{
+        ClassFormatError,
+        ClassCircularityError,
+        NoClassDefFoundError,
+        OutOfMemoryError,
+    };
+
+    pub fn findClass(self: *Self, name: [*c]const u8) FindClassError!jclass {
+        return self.interface.FindClass(self, name);
     }
 
     pub fn newStringUTF(self: *Self, buf: [*c]const u8) jstring {
         return self.interface.NewStringUTF(self, buf);
     }
 
-    pub fn findClass(self: *Self, name: [*c]const u8) jclass {
-        return self.interface.FindClass(self, name);
-    }
-
-    pub fn throwNew(self: *Self, class: jclass, message: [*c]const u8) !void {
-        try handleError(self.interface.ThrowNew(self, class, message));
+    pub fn throwNew(self: *Self, class: jclass, message: [*c]const u8) JNIFailureError!void {
+        try handleFailureError(self.interface.ThrowNew(self, class, message));
     }
 
     pub fn throwGeneric(self: *Self, message: [*c]const u8) !void {
-        var class = self.findClass("java/lang/Exception");
+        var class = try self.findClass("java/lang/Exception");
         return self.throwNew(class, message);
+    }
+
+    pub fn getPendingException(self: *Self) jthrowable {
+        return self.interface.ExceptionOccurred(self);
+    }
+
+    pub fn clearPendingException(self: *Self) void {
+        self.interface.ExceptionClear(self);
+    }
+
+    pub fn fatalError(self: *Self, message: [*c]const u8) noreturn {
+        self.interface.FatalError(self, message);
+    }
+
+    pub fn hasPendingException(self: *Self) bool {
+        return self.interface.ExceptionCheck(self) == 1;
     }
 };
 
