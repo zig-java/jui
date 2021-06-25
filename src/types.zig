@@ -114,15 +114,18 @@ pub const jvalue = extern union {
 pub const jfieldID = ?*opaque {};
 pub const jmethodID = ?*opaque {};
 
-pub const jobjectRefType = enum {
-    invalidRefType,
-    localRefType,
-    globalRefType,
-    weakGlobalRefType,
+pub const ObjectReferenceType = enum(c_int) {
+    /// The reference is invalid (gced, null)
+    invalid,
+    /// The reference is local and will not exist in the future
+    local,
+    /// The reference is global and is guaranteed to exist in the future
+    global,
+    /// The reference is a weak global and is guaranteed to exist in the future, but its underlying object is not
+    weak_global,
+    /// Since references are typically implemented as pointers once deleted it is not specified what value GetObjectReferenceType will return.
+    _,
 };
-
-pub const jni_false: jboolean = 0;
-pub const jni_true: jboolean = 1;
 
 // The new error handling model for jui is simple:
 // 1. Handle known errors/exceptions mentioned in the JNI as Zig errors
@@ -384,7 +387,7 @@ const JNINativeInterface = extern struct {
     NewDirectByteBuffer: fn ([*c]JNIEnv, ?*c_void, jlong) callconv(JNICALL) jobject,
     GetDirectBufferAddress: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ?*c_void,
     GetDirectBufferCapacity: fn ([*c]JNIEnv, jobject) callconv(JNICALL) jlong,
-    GetObjectRefType: fn ([*c]JNIEnv, jobject) callconv(JNICALL) jobjectRefType,
+    GetObjectReferenceType: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ObjectReferenceType,
     GetModule: fn ([*c]JNIEnv, jclass) callconv(JNICALL) jobject,
 };
 
@@ -418,15 +421,15 @@ pub const JNIEnv = extern struct {
 
     // Utils
 
-    fn getClassNameOfObject(self: *Self, obj: jobject) jstring {
-        var cls = self.interface.GetObjectClass(self, obj);
+    pub fn getClassNameOfObject(self: *Self, obj: jobject) jstring {
+        var cls = self.getObjectClass(obj);
 
         // First get the class object
         var mid = self.interface.GetMethodID(self, cls, "getClass", "()Ljava/lang/Class;");
         var clsObj = self.interface.CallObjectMethod(self, obj, mid);
 
         // Now get the class object's class descriptor
-        cls = self.interface.GetObjectClass(self, clsObj);
+        cls = self.getObjectClass(clsObj);
 
         // Find the getName() method on the class object
         mid = self.interface.GetMethodID(self, cls, "getName", "()Ljava/lang/String;");
@@ -440,7 +443,6 @@ pub const JNIEnv = extern struct {
     /// Only use this if you're 100% sure an error/exception has occurred
     fn handleKnownError(self: *Self, comptime Set: type) Set {
         var throwable = self.getPendingException();
-        defer self.clearPendingException();
 
         var name_str = self.getClassNameOfObject(throwable);
 
@@ -452,14 +454,15 @@ pub const JNIEnv = extern struct {
 
         var x = std.hash.Wyhash.hash(0, eon);
 
-        var final = @field(Set, comptime std.meta.fields(Set)[0].name);
-
         inline for (comptime std.meta.fields(Set)) |err| {
             var z = std.hash.Wyhash.hash(0, err.name);
-            if (x == z) final = @field(Set, err.name);
+            if (x == z) {
+                self.clearPendingException();
+                return @field(Set, err.name);
+            }
         }
 
-        return final;
+        return @field(Set, comptime std.meta.fields(Set)[0].name);
     }
 
     pub const JNIVersion = struct {
@@ -467,16 +470,23 @@ pub const JNIEnv = extern struct {
         major: u16,
     };
 
+    // Version Information
+
     /// Gets the JNI version (not the Java version!)
     pub fn getJNIVersion(self: *Self) JNIVersion {
         var version = self.interface.GetVersion(self);
         return @bitCast(JNIVersion, version);
     }
 
+    // Class Operations
+
     pub const DefineClassError = error{
+        /// The class data does not specify a valid class
         ClassFormatError,
+        /// A class or interface would be its own superclass or superinterface
         ClassCircularityError,
         OutOfMemoryError,
+        /// The caller attempts to define a class in the "java" package tree
         SecurityException,
     };
 
@@ -492,8 +502,11 @@ pub const JNIEnv = extern struct {
     }
 
     pub const FindClassError = error{
+        /// The class data does not specify a valid class
         ClassFormatError,
+        /// A class or interface would be its own superclass or superinterface
         ClassCircularityError,
+        /// No definition for a requested class or interface can be found
         NoClassDefFoundError,
         OutOfMemoryError,
     };
@@ -530,6 +543,90 @@ pub const JNIEnv = extern struct {
     pub fn hasPendingException(self: *Self) bool {
         return self.interface.ExceptionCheck(self) == 1;
     }
+
+    // References
+
+    pub const NewReferenceError = error{
+        ReferenceError,
+    };
+
+    pub fn newReference(self: *Self, kind: ObjectReferenceType, reference: jobject) NewReferenceError!jobject {
+        std.debug.assert(kind != .invalid);
+
+        var maybe_reference = switch (kind) {
+            .global => self.interface.NewGlobalRef(self, reference),
+            .local => self.interface.NewLocalRef(self, reference),
+            .weak_global => self.interface.NewWeakGlobalRef(self, reference),
+        };
+
+        if (maybe_reference) |new_reference| {
+            return new_reference;
+        } else {
+            self.clearPendingException();
+            return error.ReferenceError;
+        }
+    }
+
+    // Object Operations
+
+    pub const AllocObjectError = error{
+        /// The class is an interface or an abstract class
+        InstantiationException,
+        OutOfMemoryError,
+    };
+
+    /// Allocates a new Java object without invoking any of the constructors for the object, then returns a reference to the object
+    /// NOTE: Objects created with this function are not eligible for finalization
+    pub fn allocObject(self: *Self, class: jclass) AllocObjectError!jobject {
+        var maybe_object = self.interface.AllocObject(self, class);
+        return if (maybe_object) |object|
+            object
+        else
+            return self.handleKnownError(AllocObjectError);
+    }
+
+    pub const NewObjectError = error{
+        /// Any exception thrown by the constructor
+        Exception,
+        /// The class is an interface or an abstract class
+        InstantiationException,
+        OutOfMemoryError,
+    };
+
+    /// Constructs a new Java object
+    /// The passed method_id must be a constructor, and args must match
+    /// Class must not be an array (see newArray!)
+    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: []const jvalue) NewObjectError!jobject {
+        var maybe_object = self.interface.NewObjectA(self, class, method_id, args);
+        return if (maybe_object) |object|
+            object
+        else
+            return self.handleKnownError(NewObjectError);
+    }
+
+    /// Returns the class of an object
+    pub fn getObjectClass(self: *Self, object: jobject) jclass {
+        std.debug.assert(object != null);
+        return self.interface.GetObjectClass(self, object);
+    }
+
+    /// Returns the type of an reference, see ObjectReferenceType for details
+    pub fn getObjectReferenceType(self: *Self, object: jobject) ObjectReferenceType {
+        return self.interface.GetObjectReferenceType(self, object);
+    }
+
+    /// Tests whether an object is an instance of a class
+    pub fn isInstanceOf(self: *Self, object: jobject, class: jclass) bool {
+        return self.interface.IsInstanceOf(self, object, class) == 1;
+    }
+
+    /// Tests whether two references refer to the same Java object
+    /// NOTE: This is **not** `.equals`, it's `==` - we're comparing references, not values!
+    pub fn areSameObject(self: *Self, object1: jobject, object2: jobject) bool {
+        return self.interface.IsSameObject(self, object1, object2) == 1;
+    }
+
+    // Accessing Fields of Objects
 };
 
 pub const JavaVM = extern struct {
