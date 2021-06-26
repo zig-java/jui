@@ -13,16 +13,20 @@ pub fn exportAs(comptime name: []const u8, function: anytype) void {
 }
 
 // This should work in theory but it doesn't, huh.
-// pub fn exportUnder(comptime class_name: []const u8, functions: anytype) void {
-//     inline for (std.meta.declarations(functions)) |decl| {
-//         if (!decl.is_pub) continue;
-//         switch (decl.data) {
-//             .Var => |v| if (@typeInfo(v) == .Fn) exportAs(class_name ++ "." ++ decl.name, v),
-//             .Fn => |f| exportAs(class_name ++ "." ++ decl.name, f.fn_type),
-//             else => continue,
-//         }
-//     }
-// }
+pub fn exportUnder(comptime class_name: []const u8, functions: anytype) void {
+    // inline for (std.meta.declarations(functions)) |decl| {
+    //     if (!decl.is_pub) continue;
+    //     switch (decl.data) {
+    //         .Var => |v| if (@typeInfo(v) == .Fn) exportAs(class_name ++ "." ++ decl.name, v),
+    //         .Fn => |f| exportAs(class_name ++ "." ++ decl.name, f.fn_type),
+    //         else => continue,
+    //     }
+    // }
+    inline for (std.meta.fields(@TypeOf(functions))) |field| {
+        // @compileLog(field.name);
+        exportAs(class_name ++ "." ++ field.name, @field(functions, field.name));
+    }
+}
 
 // --- Code ~~stolen~~ adapted from debug.zig starts here ---
 // Copyright (c) 2015-2021 Zig Contributors
@@ -105,7 +109,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@typeIn
     const se = splitError(@typeInfo(@typeInfo(@TypeOf(function)).Fn.return_type.?));
     var env: *JNIEnv = args[0];
 
-    if (se.error_set) |set| {
+    if (se.error_set) |_| {
         return @call(.{}, function, args) catch |err| {
             var maybe_ert = @errorReturnTrace();
             if (maybe_ert) |ert| {

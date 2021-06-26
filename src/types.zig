@@ -99,6 +99,18 @@ pub const jobjectArray = jarray;
 
 pub const jweak = jobject;
 
+pub const NativeType = enum {
+    object,
+    boolean,
+    byte,
+    char,
+    short,
+    int,
+    long,
+    float,
+    double,
+};
+
 pub const jvalue = extern union {
     z: jboolean,
     b: jbyte,
@@ -114,7 +126,7 @@ pub const jvalue = extern union {
 pub const jfieldID = ?*opaque {};
 pub const jmethodID = ?*opaque {};
 
-pub const ObjectReferenceType = enum(c_int) {
+pub const ObjectReferenceKind = enum(c_int) {
     /// The reference is invalid (gced, null)
     invalid,
     /// The reference is local and will not exist in the future
@@ -123,7 +135,7 @@ pub const ObjectReferenceType = enum(c_int) {
     global,
     /// The reference is a weak global and is guaranteed to exist in the future, but its underlying object is not
     weak_global,
-    /// Since references are typically implemented as pointers once deleted it is not specified what value GetObjectReferenceType will return.
+    /// Since references are typically implemented as pointers once deleted it is not specified what value GetObjectReferenceKind will return.
     _,
 };
 
@@ -387,7 +399,7 @@ const JNINativeInterface = extern struct {
     NewDirectByteBuffer: fn ([*c]JNIEnv, ?*c_void, jlong) callconv(JNICALL) jobject,
     GetDirectBufferAddress: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ?*c_void,
     GetDirectBufferCapacity: fn ([*c]JNIEnv, jobject) callconv(JNICALL) jlong,
-    GetObjectReferenceType: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ObjectReferenceType,
+    GetObjectReferenceKind: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ObjectReferenceKind,
     GetModule: fn ([*c]JNIEnv, jclass) callconv(JNICALL) jobject,
 };
 
@@ -462,7 +474,8 @@ pub const JNIEnv = extern struct {
             }
         }
 
-        return @field(Set, comptime std.meta.fields(Set)[0].name);
+        const first = comptime std.meta.fields(Set)[0];
+        return @field(Set, first.name);
     }
 
     pub const JNIVersion = struct {
@@ -511,35 +524,71 @@ pub const JNIEnv = extern struct {
         OutOfMemoryError,
     };
 
-    pub fn findClass(self: *Self, name: [*c]const u8) FindClassError!jclass {
+    /// This function loads a locally-defined class
+    pub fn findClass(self: *Self, name: [*:0]const u8) FindClassError!jclass {
         return self.interface.FindClass(self, name);
     }
 
-    pub fn newStringUTF(self: *Self, buf: [*c]const u8) jstring {
-        return self.interface.NewStringUTF(self, buf);
+    /// Gets superclass of class
+    /// If class specifies the class Object, or class represents an interface, this function returns null
+    pub fn getSuperclass(self: *Self, class: jclass) jclass {
+        return self.interface.GetSuperclass(self, class);
     }
 
-    pub fn throwNew(self: *Self, class: jclass, message: [*c]const u8) JNIFailureError!void {
+    /// Determines whether an object of class1 can be safely cast to class2
+    pub fn canBeCastTo(self: *Self, class1: jclass, class2: jclass) bool {
+        return self.interface.IsAssignableFrom(class1, class2) == 1;
+    }
+
+    // Module Operations
+
+    /// Returns the java.lang.Module object for the module that the class is a member of
+    /// If the class is not in a named module then the unnamed module of the class loader for the class is returned
+    /// If the class represents an array type then this function returns the Module object for the element type
+    /// If the class represents a primitive type or void, then the Module object for the java.base module is returned
+    pub fn getModule(self: *Self, class: jclass) jobject {
+        return self.interface.GetModule(self, class);
+    }
+
+    // Exceptions
+
+    /// Causes a java.lang.Throwable object to be thrown
+    pub fn throw(self: *Self, throwable: jthrowable) JNIFailureError!void {
+        try handleFailureError(self.interface.Throw(self, throwable));
+    }
+
+    /// Constructs an exception object from the specified class with the message specified by message and causes that exception to be thrown
+    pub fn throwNew(self: *Self, class: jclass, message: [*:0]const u8) JNIFailureError!void {
         try handleFailureError(self.interface.ThrowNew(self, class, message));
     }
 
-    pub fn throwGeneric(self: *Self, message: [*c]const u8) !void {
+    /// Throws a generic java.lang.Excpetion with the specified message
+    pub fn throwGeneric(self: *Self, message: [*:0]const u8) !void {
         var class = try self.findClass("java/lang/Exception");
         return self.throwNew(class, message);
     }
 
+    /// Gets the exception object that is currently in the process of being thrown
     pub fn getPendingException(self: *Self) jthrowable {
         return self.interface.ExceptionOccurred(self);
     }
 
+    /// Prints an exception and a backtrace of the stack to a system error-reporting channel, such as stderr
+    pub fn describeException(self: *Self) void {
+        self.interface.ExceptionDescribe(self);
+    }
+
+    /// Clears any exception that is currently being thrown
     pub fn clearPendingException(self: *Self) void {
         self.interface.ExceptionClear(self);
     }
 
-    pub fn fatalError(self: *Self, message: [*c]const u8) noreturn {
+    /// Raises a fatal error and does not expect the VM to recover
+    pub fn fatalError(self: *Self, message: [*:0]const u8) noreturn {
         self.interface.FatalError(self, message);
     }
 
+    /// Determines if an exception is being thrown
     pub fn hasPendingException(self: *Self) bool {
         return self.interface.ExceptionCheck(self) == 1;
     }
@@ -547,16 +596,17 @@ pub const JNIEnv = extern struct {
     // References
 
     pub const NewReferenceError = error{
+        /// Errors/exceptions returned by New*Ref are super ambigious so sadly this is the best solution :(
         ReferenceError,
     };
 
-    pub fn newReference(self: *Self, kind: ObjectReferenceType, reference: jobject) NewReferenceError!jobject {
-        std.debug.assert(kind != .invalid);
-
+    /// Create a new reference based on an existing reference
+    pub fn newReference(self: *Self, kind: ObjectReferenceKind, reference: jobject) NewReferenceError!jobject {
         var maybe_reference = switch (kind) {
             .global => self.interface.NewGlobalRef(self, reference),
             .local => self.interface.NewLocalRef(self, reference),
             .weak_global => self.interface.NewWeakGlobalRef(self, reference),
+            else => unreachable,
         };
 
         if (maybe_reference) |new_reference| {
@@ -565,6 +615,37 @@ pub const JNIEnv = extern struct {
             self.clearPendingException();
             return error.ReferenceError;
         }
+    }
+
+    /// Deletes a reference
+    pub fn deleteReference(self: *Self, kind: ObjectReferenceKind, reference: jobject) void {
+        switch (kind) {
+            .global => self.interface.DeleteGlobalRef(self, reference),
+            .local => self.interface.DeleteLocalRef(self, reference),
+            .weak_global => self.interface.DeleteWeakGlobalRef(self, reference),
+            else => unreachable,
+        }
+    }
+
+    /// Ensures that at least a given number of local references can be created in the current thread
+    pub fn ensureLocalCapacity(self: *Self, capacity: jint) JNIFailureError!void {
+        std.debug.assert(capacity >= 0);
+        return handleFailureError(self.interface.EnsureLocalCapacity(self, capacity));
+    }
+
+    /// Creates a new local reference frame, in which at least a given number of local references can be created
+    /// Useful for not polluting the thread frame
+    /// Think of it like an ArenaAllocator for your native function
+    pub fn pushLocalFrame(self: *Self, capacity: jint) JNIFailureError!void {
+        std.debug.assert(capacity > 0);
+        return handleFailureError(self.interface.PushLocalFrame(self, capacity));
+    }
+
+    /// Pops a local frame
+    /// Result is an object you want to pass back to the previous frame
+    /// If you don't want to pass anything back, it can be null
+    pub fn popLocalFrame(self: *Self, result: jobject) jobject {
+        return self.interface.PopLocalFrame(self, result);
     }
 
     // Object Operations
@@ -610,9 +691,9 @@ pub const JNIEnv = extern struct {
         return self.interface.GetObjectClass(self, object);
     }
 
-    /// Returns the type of an reference, see ObjectReferenceType for details
-    pub fn getObjectReferenceType(self: *Self, object: jobject) ObjectReferenceType {
-        return self.interface.GetObjectReferenceType(self, object);
+    /// Returns the type of an reference, see ObjectReferenceKind for details
+    pub fn getObjectReferenceKind(self: *Self, object: jobject) ObjectReferenceKind {
+        return self.interface.GetObjectReferenceKind(self, object);
     }
 
     /// Tests whether an object is an instance of a class
@@ -622,11 +703,97 @@ pub const JNIEnv = extern struct {
 
     /// Tests whether two references refer to the same Java object
     /// NOTE: This is **not** `.equals`, it's `==` - we're comparing references, not values!
-    pub fn areSameObject(self: *Self, object1: jobject, object2: jobject) bool {
+    pub fn isSameObject(self: *Self, object1: jobject, object2: jobject) bool {
         return self.interface.IsSameObject(self, object1, object2) == 1;
     }
 
     // Accessing Fields of Objects
+
+    pub const GetFieldIdError = error{
+        /// The specified field cannot be found
+        NoSuchFieldError,
+        /// The class initializer fails due to an exception
+        ExceptionInInitializerError,
+        OutOfMemoryError,
+    };
+
+    /// Returns the field ID for an instance (nonstatic) field of a class; the field is specified by its name and signature
+    pub fn getFieldId(self: *Self, class: jclass, name: [*:0]const u8, signature: [*:0]const u8) GetFieldIdError!jfieldID {
+        var maybe_jfieldid = self.interface.GetFieldID(self, class, name, signature);
+        return if (maybe_jfieldid) |object|
+            object
+        else
+            return self.handleKnownError(GetFieldIdError);
+    }
+
+    // Temporary Variety Pack
+
+    fn MapNativeType(comptime native_type: NativeType) type {
+        return switch (native_type) {
+            .object => jobject,
+            .boolean => jboolean,
+            .byte => jbyte,
+            .char => jchar,
+            .short => jshort,
+            .int => jint,
+            .long => jlong,
+            .float => jfloat,
+            .double => jdouble,
+        };
+    }
+
+    /// Gets the value of a field
+    pub fn getField(self: *Self, comptime native_type: NativeType, object: jobject, field_id: jfieldID) MapNativeType(native_type) {
+        return (switch (native_type) {
+            .object => self.interface.GetObjectField,
+            .boolean => self.interface.GetBooleanField,
+            .byte => self.interface.GetByteField,
+            .char => self.interface.GetCharField,
+            .short => self.interface.GetShortField,
+            .int => self.interface.GetIntField,
+            .long => self.interface.GetLongField,
+            .float => self.interface.GetFloatField,
+            .double => self.interface.GetDoubleField,
+        })(self, object, field_id);
+    }
+
+    /// Sets the value of a field
+    pub fn setField(self: *Self, comptime native_type: NativeType, object: jobject, field_id: jobject, value: MapNativeType(native_type)) void {
+        (switch (native_type) {
+            .object => self.interface.SetObjectField,
+            .boolean => self.interface.SetBooleanField,
+            .byte => self.interface.SetByteField,
+            .char => self.interface.SetCharField,
+            .short => self.interface.SetShortField,
+            .int => self.interface.SetIntField,
+            .long => self.interface.SetLongField,
+            .float => self.interface.SetFloatField,
+            .double => self.interface.SetDoubleField,
+        })(self, object, field_id, value);
+    }
+
+    // Calling Instance Methods
+
+    pub const GetMethodIdError = error{
+        /// The specified method cannot be found
+        NoSuchMethodError,
+        /// The class initializer fails due to an exception
+        ExceptionInInitializerError,
+        OutOfMemoryError,
+    };
+
+    /// Returns the method ID for an instance (nonstatic) method of a class or interface
+    pub fn getMethodId(self: *Self, class: jclass, name: [*:0]const u8, signature: [*:0]const u8) GetMethodIdError!jmethodID {
+        var maybe_jmethodid = self.interface.GetMethodID(self, class, name, signature);
+        return if (maybe_jmethodid) |object|
+            object
+        else
+            return self.handleKnownError(GetMethodIdError);
+    }
+
+    pub fn newStringUTF(self: *Self, buf: [*:0]const u8) jstring {
+        return self.interface.NewStringUTF(self, buf);
+    }
 };
 
 pub const JavaVM = extern struct {
