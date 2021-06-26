@@ -677,7 +677,7 @@ pub const JNIEnv = extern struct {
     /// Constructs a new Java object
     /// The passed method_id must be a constructor, and args must match
     /// Class must not be an array (see newArray!)
-    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: []const jvalue) NewObjectError!jobject {
+    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: [*:0]const jvalue) NewObjectError!jobject {
         var maybe_object = self.interface.NewObjectA(self, class, method_id, args);
         return if (maybe_object) |object|
             object
@@ -725,8 +725,6 @@ pub const JNIEnv = extern struct {
         else
             return self.handleKnownError(GetFieldIdError);
     }
-
-    // Temporary Variety Pack
 
     fn MapNativeType(comptime native_type: NativeType) type {
         return switch (native_type) {
@@ -790,6 +788,94 @@ pub const JNIEnv = extern struct {
         else
             return self.handleKnownError(GetMethodIdError);
     }
+
+    pub const CallMethodError = error{Exception};
+
+    /// Invoke an instance (nonstatic) method on a Java object
+    pub fn callMethod(self: *Self, comptime native_type: NativeType, object: jobject, method_id: jmethodID, args: [*:0]const jvalue) CallMethodError!MapNativeType(native_type) {
+        var value = (switch (native_type) {
+            .object => self.interface.CallObjectMethodA,
+            .boolean => self.interface.CallBooleanMethodA,
+            .byte => self.interface.CallByteMethodA,
+            .char => self.interface.CallCharMethodA,
+            .short => self.interface.CallShortMethodA,
+            .int => self.interface.CallIntMethodA,
+            .long => self.interface.CallLongMethodA,
+            .float => self.interface.CallFloatMethodA,
+            .double => self.interface.CallDoubleMethodA,
+        })(self, object, method_id, args);
+
+        return if (self.hasPendingException()) error.Exception else value;
+    }
+
+    /// Invoke an instance (nonstatic) method on a Java object based on `class`'s implementation of the method
+    pub fn callNonVirtualMethod(self: *Self, comptime native_type: NativeType, object: jobject, class: jclass, method_id: jmethodID, args: [*:0]const jvalue) CallMethodError!MapNativeType(native_type) {
+        var value = (switch (native_type) {
+            .object => self.interface.CallNonvirtualObjectMethodA,
+            .boolean => self.interface.CallNonvirtualBooleanMethodA,
+            .byte => self.interface.CallNonvirtualByteMethodA,
+            .char => self.interface.CallNonvirtualCharMethodA,
+            .short => self.interface.CallNonvirtualShortMethodA,
+            .int => self.interface.CallNonvirtualIntMethodA,
+            .long => self.interface.CallNonvirtualLongMethodA,
+            .float => self.interface.CallNonvirtualFloatMethodA,
+            .double => self.interface.CallNonvirtualDoubleMethodA,
+        })(self, object, class, method_id, args);
+
+        return if (self.hasPendingException()) error.Exception else value;
+    }
+
+    // Accessing Static Fields
+
+    pub const GetStaticFieldIdError = error{
+        /// The specified field cannot be found
+        NoSuchFieldError,
+        /// The class initializer fails due to an exception
+        ExceptionInInitializerError,
+        OutOfMemoryError,
+    };
+
+    pub fn getStaticFieldId(self: *Self, class: jclass, name: [*:0]const u8, signature: [*:0]const u8) GetStaticFieldIdError!jfieldID {
+        var maybe_jfieldid = self.interface.GetStaticFieldID(self, class, name, signature);
+        return if (maybe_jfieldid) |object|
+            object
+        else
+            return self.handleKnownError(GetStaticFieldIdError);
+    }
+
+    /// Gets the value of a field
+    pub fn getStaticField(self: *Self, comptime native_type: NativeType, class: jclass, field_id: jfieldID) MapNativeType(native_type) {
+        return (switch (native_type) {
+            .object => self.interface.GetStaticObjectField,
+            .boolean => self.interface.GetStaticBooleanField,
+            .byte => self.interface.GetStaticByteField,
+            .char => self.interface.GetStaticCharField,
+            .short => self.interface.GetStaticShortField,
+            .int => self.interface.GetStaticIntField,
+            .long => self.interface.GetStaticLongField,
+            .float => self.interface.GetStaticFloatField,
+            .double => self.interface.GetStaticDoubleField,
+        })(self, class, field_id);
+    }
+
+    /// Sets the value of a field
+    pub fn setStaticField(self: *Self, comptime native_type: NativeType, class: jclass, field_id: jobject, value: MapNativeType(native_type)) void {
+        (switch (native_type) {
+            .object => self.interface.SetStaticObjectField,
+            .boolean => self.interface.SetStaticBooleanField,
+            .byte => self.interface.SetStaticByteField,
+            .char => self.interface.SetStaticCharField,
+            .short => self.interface.SetStaticShortField,
+            .int => self.interface.SetStaticIntField,
+            .long => self.interface.SetStaticLongField,
+            .float => self.interface.SetStaticFloatField,
+            .double => self.interface.SetStaticDoubleField,
+        })(self, class, field_id, value);
+    }
+
+    // Calling Static Methods
+
+    // Variety Pack
 
     pub fn newStringUTF(self: *Self, buf: [*:0]const u8) jstring {
         return self.interface.NewStringUTF(self, buf);
