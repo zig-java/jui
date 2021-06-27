@@ -111,6 +111,20 @@ pub const NativeType = enum {
     double,
 };
 
+pub fn MapNativeType(comptime native_type: NativeType) type {
+    return switch (native_type) {
+        .object => jobject,
+        .boolean => jboolean,
+        .byte => jbyte,
+        .char => jchar,
+        .short => jshort,
+        .int => jint,
+        .long => jlong,
+        .float => jfloat,
+        .double => jdouble,
+    };
+}
+
 pub const jvalue = extern union {
     z: jboolean,
     b: jbyte,
@@ -681,7 +695,7 @@ pub const JNIEnv = extern struct {
     /// Constructs a new Java object
     /// The passed method_id must be a constructor, and args must match
     /// Class must not be an array (see newArray!)
-    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: [*c]const jvalue) NewObjectError!jobject {
+    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: ?[*]const jvalue) NewObjectError!jobject {
         var maybe_object = self.interface.NewObjectA(self, class, method_id, args);
         return if (maybe_object) |object|
             object
@@ -728,20 +742,6 @@ pub const JNIEnv = extern struct {
             object
         else
             return self.handleKnownError(GetFieldIdError);
-    }
-
-    fn MapNativeType(comptime native_type: NativeType) type {
-        return switch (native_type) {
-            .object => jobject,
-            .boolean => jboolean,
-            .byte => jbyte,
-            .char => jchar,
-            .short => jshort,
-            .int => jint,
-            .long => jlong,
-            .float => jfloat,
-            .double => jdouble,
-        };
     }
 
     /// Gets the value of a field
@@ -796,7 +796,7 @@ pub const JNIEnv = extern struct {
     pub const CallMethodError = error{Exception};
 
     /// Invoke an instance (nonstatic) method on a Java object
-    pub fn callMethod(self: *Self, comptime native_type: NativeType, object: jobject, method_id: jmethodID, args: [*c]const jvalue) CallMethodError!MapNativeType(native_type) {
+    pub fn callMethod(self: *Self, comptime native_type: NativeType, object: jobject, method_id: jmethodID, args: ?[*]const jvalue) CallMethodError!MapNativeType(native_type) {
         var value = (switch (native_type) {
             .object => self.interface.CallObjectMethodA,
             .boolean => self.interface.CallBooleanMethodA,
@@ -815,7 +815,7 @@ pub const JNIEnv = extern struct {
     pub const CallNonVirtualMethodError = error{Exception};
 
     /// Invoke an instance (nonstatic) method on a Java object based on `class`'s implementation of the method
-    pub fn callNonVirtualMethod(self: *Self, comptime native_type: NativeType, object: jobject, class: jclass, method_id: jmethodID, args: [*c]const jvalue) CallNonVirtualMethodError!MapNativeType(native_type) {
+    pub fn callNonVirtualMethod(self: *Self, comptime native_type: NativeType, object: jobject, class: jclass, method_id: jmethodID, args: ?[*]const jvalue) CallNonVirtualMethodError!MapNativeType(native_type) {
         var value = (switch (native_type) {
             .object => self.interface.CallNonvirtualObjectMethodA,
             .boolean => self.interface.CallNonvirtualBooleanMethodA,
@@ -901,7 +901,7 @@ pub const JNIEnv = extern struct {
     pub const CallStaticMethodError = error{Exception};
 
     /// Invoke an instance (nonstatic) method on a Java object
-    pub fn callStaticMethod(self: *Self, comptime native_type: NativeType, class: jclass, method_id: jmethodID, args: [*c]const jvalue) CallStaticMethodError!MapNativeType(native_type) {
+    pub fn callStaticMethod(self: *Self, comptime native_type: NativeType, class: jclass, method_id: jmethodID, args: ?[*]const jvalue) CallStaticMethodError!MapNativeType(native_type) {
         var value = (switch (native_type) {
             .object => self.interface.CallStaticObjectMethodA,
             .boolean => self.interface.CallStaticBooleanMethodA,
@@ -919,8 +919,120 @@ pub const JNIEnv = extern struct {
 
     // String Operations
 
-    pub fn newStringUTF(self: *Self, buf: [*:0]const u8) jstring {
-        return self.interface.NewStringUTF(self, buf);
+    pub const NewStringError = error{OutOfMemoryError};
+
+    /// Constructs a new java.lang.String object from an array of Unicode characters
+    pub fn newString(self: *Self, unicode_chars: []const u16) NewStringError!jstring {
+        var maybe_jstring = self.interface.NewString(self, unicode_chars, unicode_chars.len);
+        return if (maybe_jstring) |string|
+            string
+        else
+            return self.handleKnownError(NewStringError);
+    }
+
+    /// Returns the length (the count of Unicode characters) of a Java string
+    pub fn getStringLength(self: *Self, string: jstring) jsize {
+        return self.interface.GetStringLength(self, string);
+    }
+
+    pub const GetStringCharsError = error{Unknown};
+    pub const GetStringCharsReturn = struct { chars: [*]const u16, is_copy: bool };
+
+    /// Returns a pointer to the array of Unicode characters of the string
+    /// Caller must release chars with `releaseStringChars`
+    pub fn getStringChars(self: *Self, string: jstring) GetStringCharsError!GetStringCharsReturn {
+        var is_copy: u8 = 0;
+        var maybe_chars = self.interface.GetStringChars(self, string, &is_copy);
+        return if (maybe_chars) |chars|
+            GetStringCharsReturn{ .chars = chars, .is_copy = is_copy == 1 }
+        else
+            error.Unknown;
+    }
+
+    /// Informs the VM that the native code no longer needs access to chars
+    pub fn releaseStringChars(self: *Self, string: jstring, chars: [*]const u16) void {
+        self.interface.ReleaseStringChars(self, string, chars);
+    }
+
+    pub const NewStringUTFError = error{OutOfMemoryError};
+
+    /// Constructs a new java.lang.String object from an array of characters in modified UTF-8 encoding
+    pub fn newStringUTF(self: *Self, buf: [*:0]const u8) NewStringUTFError!jstring {
+        var maybe_jstring = self.interface.NewStringUTF(self, buf);
+        return if (maybe_jstring) |string|
+            string
+        else
+            return self.handleKnownError(NewStringUTFError);
+    }
+
+    /// Returns the length in bytes of the modified UTF-8 representation of a string
+    pub fn getStringUTFLength(self: *Self, string: jstring) jsize {
+        return self.interface.GetStringUTFLength(self, string);
+    }
+
+    pub const GetStringUTFCharsError = error{Unknown};
+    pub const GetStringUTFCharsReturn = struct { chars: [*]const u8, is_copy: bool };
+
+    /// Returns a pointer to an array of bytes representing the string in modified UTF-8 encoding
+    /// Caller must release chars with `releaseStringUTFChars`
+    pub fn getStringUTFChars(self: *Self, string: jstring) GetStringUTFCharsError!GetStringUTFCharsReturn {
+        var is_copy: u8 = 0;
+        var maybe_chars = self.interface.GetStringUTFChars(self, string, &is_copy);
+        return if (maybe_chars) |chars|
+            GetStringUTFCharsReturn{ .chars = chars, .is_copy = is_copy == 1 }
+        else
+            error.Unknown;
+    }
+
+    /// Informs the VM that the native code no longer needs access to chars
+    pub fn releaseStringUTFChars(self: *Self, string: jstring, chars: [*]const u8) void {
+        self.interface.ReleaseStringUTFChars(self, string, chars);
+    }
+
+    pub const GetStringRegionError = error{StringIndexOutOfBoundsException};
+
+    /// Copies len number of Unicode characters beginning at offset start to the given buffer buf
+    pub fn getStringRegion(self: *Self, string: jstring, start: jsize, len: jsize, buf: []u16) GetStringRegionError!void {
+        var string_length = self.getStringLength(string);
+        std.debug.assert(start >= 0 and start < string_length);
+        std.debug.assert(len >= 0 and start + len < string_length);
+
+        self.interface.GetStringRegion(self, string, start, len, buf);
+        if (self.hasPendingException())
+            return error.StringIndexOutOfBoundsException;
+    }
+
+    pub const GetStringUTFRegionError = error{StringIndexOutOfBoundsException};
+
+    /// Translates len number of Unicode characters beginning at offset start into modified UTF-8 encoding and place the result in the given buffer buf
+    pub fn getStringUTFRegion(self: *Self, string: jstring, start: jsize, len: jsize, buf: []u8) GetStringUTFRegionError!void {
+        var string_length = self.getStringUTFLength(string);
+        std.debug.assert(start >= 0 and start < string_length);
+        std.debug.assert(len >= 0 and start + len < string_length);
+
+        self.interface.GetStringUTFRegion(self, string, start, len, buf);
+        if (self.hasPendingException())
+            return error.StringIndexOutOfBoundsException;
+    }
+
+    pub const GetStringCriticalError = error{Unknown};
+    pub const GetStringCriticalReturn = struct { chars: [*]const u16, is_copy: bool };
+
+    /// NOTE: This should only be used in non-blocking, fast-finishing functions
+    /// Returns a pointer to an array of bytes representing the string in modified UTF-8 encoding
+    /// Caller must release chars with `releaseStringCritical`
+    pub fn getStringCritical(self: *Self, string: jstring) GetStringCriticalError!GetStringCriticalReturn {
+        var is_copy: u8 = 0;
+        var maybe_chars = self.interface.GetStringCritical(self, string, &is_copy);
+        return if (maybe_chars) |chars|
+            GetStringCriticalReturn{ .chars = chars, .is_copy = is_copy == 1 }
+        else
+            error.Unknown;
+    }
+
+    /// Informs the VM that the native code no longer needs access to chars
+    pub fn releaseStringCritical(self: *Self, string: jstring, chars: [*]const u16) void {
+        self.interface.ReleaseStringCritical(self, string, chars);
     }
 
     // Variety Pack
