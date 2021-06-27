@@ -8,7 +8,6 @@ public final class JNIExample {
     public static native String greet();
 
     public static void main(String[] args) {
-        // Math.random()
         try {
             System.out.println(greet());
         } catch (Exception e) {

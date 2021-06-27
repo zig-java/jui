@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const descriptors = @import("descriptors.zig");
+pub const Reflector = @import("Reflector.zig");
 pub usingnamespace @import("types.zig");
 
 pub fn exportAs(comptime name: []const u8, function: anytype) void {
@@ -12,18 +14,8 @@ pub fn exportAs(comptime name: []const u8, function: anytype) void {
     @export(function, .{ .name = "Java_" ++ &z, .linkage = .Strong });
 }
 
-// This should work in theory but it doesn't, huh.
 pub fn exportUnder(comptime class_name: []const u8, functions: anytype) void {
-    // inline for (std.meta.declarations(functions)) |decl| {
-    //     if (!decl.is_pub) continue;
-    //     switch (decl.data) {
-    //         .Var => |v| if (@typeInfo(v) == .Fn) exportAs(class_name ++ "." ++ decl.name, v),
-    //         .Fn => |f| exportAs(class_name ++ "." ++ decl.name, f.fn_type),
-    //         else => continue,
-    //     }
-    // }
     inline for (std.meta.fields(@TypeOf(functions))) |field| {
-        // @compileLog(field.name);
         exportAs(class_name ++ "." ++ field.name, @field(functions, field.name));
     }
 }

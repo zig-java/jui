@@ -4,15 +4,20 @@ const jui = @import("jui");
 fn greet(env: *jui.JNIEnv, class: jui.jclass) !jui.jstring {
     _ = class;
 
+    var reflector = jui.Reflector.init(std.heap.page_allocator, env);
+
+    var System = try reflector.getClass("java/lang/System");
+    var lineSep = try System.getStaticMethod("lineSeparator", fn () jui.Reflector.StringType);
+
+    var str = try lineSep.call(.{});
+
+    var chars = try env.getStringUTFChars(str);
+    defer env.releaseStringUTFChars(str, chars.chars);
+
+    var length = env.getStringUTFLength(str);
+
     var buf: [256]u8 = undefined;
-
-    var math = try env.findClass("java/lang/Math");
-    var random = try env.getStaticMethodId(math, "random", "()D");
-
-    var inv = try env.callStaticMethod(.double, math, random, null);
-
-    var out = try std.fmt.bufPrintZ(&buf, "Here's a random number: {d}", .{inv * 100});
-    return env.newStringUTF(out);
+    return try env.newStringUTF(try std.fmt.bufPrintZ(&buf, "Hello, your system's newline chars are: {d}", .{chars.chars[0..@intCast(usize, length)]}));
 }
 
 comptime {
