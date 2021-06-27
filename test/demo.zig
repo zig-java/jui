@@ -2,13 +2,16 @@ const std = @import("std");
 const jui = @import("jui");
 
 fn greet(env: *jui.JNIEnv, class: jui.jclass) !jui.jstring {
-    _ = env;
     _ = class;
 
     var buf: [256]u8 = undefined;
-    var jni_version = env.getJNIVersion();
 
-    var out = try std.fmt.bufPrintZ(&buf, "Hello from Zig v{} running in {s}", .{ std.builtin.zig_version, jni_version });
+    var math = try env.findClass("java/lang/Math");
+    var random = try env.getStaticMethodId(math, "random", "()D");
+
+    var inv = try env.callStaticMethod(.double, math, random, null);
+
+    var out = try std.fmt.bufPrintZ(&buf, "Here's a random number: {d}", .{inv * 100});
     return env.newStringUTF(out);
 }
 

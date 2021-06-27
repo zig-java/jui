@@ -526,7 +526,11 @@ pub const JNIEnv = extern struct {
 
     /// This function loads a locally-defined class
     pub fn findClass(self: *Self, name: [*:0]const u8) FindClassError!jclass {
-        return self.interface.FindClass(self, name);
+        var maybe_class = self.interface.FindClass(self, name);
+        return if (maybe_class) |class|
+            class
+        else
+            return self.handleKnownError(FindClassError);
     }
 
     /// Gets superclass of class
@@ -677,7 +681,7 @@ pub const JNIEnv = extern struct {
     /// Constructs a new Java object
     /// The passed method_id must be a constructor, and args must match
     /// Class must not be an array (see newArray!)
-    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: [*:0]const jvalue) NewObjectError!jobject {
+    pub fn newObject(self: *Self, class: jclass, method_id: jmethodID, args: [*c]const jvalue) NewObjectError!jobject {
         var maybe_object = self.interface.NewObjectA(self, class, method_id, args);
         return if (maybe_object) |object|
             object
@@ -792,7 +796,7 @@ pub const JNIEnv = extern struct {
     pub const CallMethodError = error{Exception};
 
     /// Invoke an instance (nonstatic) method on a Java object
-    pub fn callMethod(self: *Self, comptime native_type: NativeType, object: jobject, method_id: jmethodID, args: [*:0]const jvalue) CallMethodError!MapNativeType(native_type) {
+    pub fn callMethod(self: *Self, comptime native_type: NativeType, object: jobject, method_id: jmethodID, args: [*c]const jvalue) CallMethodError!MapNativeType(native_type) {
         var value = (switch (native_type) {
             .object => self.interface.CallObjectMethodA,
             .boolean => self.interface.CallBooleanMethodA,
@@ -808,8 +812,10 @@ pub const JNIEnv = extern struct {
         return if (self.hasPendingException()) error.Exception else value;
     }
 
+    pub const CallNonVirtualMethodError = error{Exception};
+
     /// Invoke an instance (nonstatic) method on a Java object based on `class`'s implementation of the method
-    pub fn callNonVirtualMethod(self: *Self, comptime native_type: NativeType, object: jobject, class: jclass, method_id: jmethodID, args: [*:0]const jvalue) CallMethodError!MapNativeType(native_type) {
+    pub fn callNonVirtualMethod(self: *Self, comptime native_type: NativeType, object: jobject, class: jclass, method_id: jmethodID, args: [*c]const jvalue) CallNonVirtualMethodError!MapNativeType(native_type) {
         var value = (switch (native_type) {
             .object => self.interface.CallNonvirtualObjectMethodA,
             .boolean => self.interface.CallNonvirtualBooleanMethodA,
@@ -875,11 +881,49 @@ pub const JNIEnv = extern struct {
 
     // Calling Static Methods
 
-    // Variety Pack
+    pub const GetStaticMethodIdError = error{
+        /// The specified method cannot be found
+        NoSuchMethodError,
+        /// The class initializer fails due to an exception
+        ExceptionInInitializerError,
+        OutOfMemoryError,
+    };
+
+    /// Returns the method ID for a static method of a class
+    pub fn getStaticMethodId(self: *Self, class: jclass, name: [*:0]const u8, signature: [*:0]const u8) GetStaticMethodIdError!jmethodID {
+        var maybe_jmethodid = self.interface.GetStaticMethodID(self, class, name, signature);
+        return if (maybe_jmethodid) |object|
+            object
+        else
+            return self.handleKnownError(GetStaticMethodIdError);
+    }
+
+    pub const CallStaticMethodError = error{Exception};
+
+    /// Invoke an instance (nonstatic) method on a Java object
+    pub fn callStaticMethod(self: *Self, comptime native_type: NativeType, class: jclass, method_id: jmethodID, args: [*c]const jvalue) CallStaticMethodError!MapNativeType(native_type) {
+        var value = (switch (native_type) {
+            .object => self.interface.CallStaticObjectMethodA,
+            .boolean => self.interface.CallStaticBooleanMethodA,
+            .byte => self.interface.CallStaticByteMethodA,
+            .char => self.interface.CallStaticCharMethodA,
+            .short => self.interface.CallStaticShortMethodA,
+            .int => self.interface.CallStaticIntMethodA,
+            .long => self.interface.CallStaticLongMethodA,
+            .float => self.interface.CallStaticFloatMethodA,
+            .double => self.interface.CallStaticDoubleMethodA,
+        })(self, class, method_id, args);
+
+        return if (self.hasPendingException()) error.Exception else value;
+    }
+
+    // String Operations
 
     pub fn newStringUTF(self: *Self, buf: [*:0]const u8) jstring {
         return self.interface.NewStringUTF(self, buf);
     }
+
+    // Variety Pack
 };
 
 pub const JavaVM = extern struct {
