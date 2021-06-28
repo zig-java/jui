@@ -135,6 +135,21 @@ pub const jvalue = extern union {
     f: jfloat,
     d: jdouble,
     l: jobject,
+
+    pub fn toJValue(value: anytype) jvalue {
+        return switch (@TypeOf(value)) {
+            jboolean => .{ .z = value },
+            jbyte => .{ .b = value },
+            jchar => .{ .c = value },
+            jshort => .{ .s = value },
+            jint => .{ .i = value },
+            jlong => .{ .j = value },
+            jfloat => .{ .f = value },
+            jdouble => .{ .d = value },
+            jobject => .{ .l = value },
+            else => @compileError("invalid value!"),
+        };
+    }
 };
 
 pub const jfieldID = ?*opaque {};
@@ -440,6 +455,11 @@ fn handleFailureError(return_val: jint) JNIFailureError!void {
     if (return_val < 0) return JNIFailureError.Unknown;
 }
 
+pub const JNIVersion = packed struct {
+    minor: u16,
+    major: u16,
+};
+
 pub const JNIEnv = extern struct {
     const Self = @This();
 
@@ -491,11 +511,6 @@ pub const JNIEnv = extern struct {
         const first = comptime std.meta.fields(Set)[0];
         return @field(Set, first.name);
     }
-
-    pub const JNIVersion = struct {
-        minor: u16,
-        major: u16,
-    };
 
     // Version Information
 
@@ -1043,5 +1058,9 @@ pub const JavaVM = extern struct {
 
     interface: *const JNIInvokeInterface,
 
-    pub fn destroyJavaVM() !void {}
+    pub fn getEnv(self: *Self, version: JNIVersion) JNIFailureError!*JNIEnv {
+        var env: *JNIEnv = undefined;
+        try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*c_void, &env), @bitCast(jint, version)));
+        return env;
+    }
 };

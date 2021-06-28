@@ -16,7 +16,14 @@ pub fn exportAs(comptime name: []const u8, function: anytype) void {
 
 pub fn exportUnder(comptime class_name: []const u8, functions: anytype) void {
     inline for (std.meta.fields(@TypeOf(functions))) |field| {
-        exportAs(class_name ++ "." ++ field.name, @field(functions, field.name));
+        const z = @field(functions, field.name);
+
+        if (std.mem.eql(u8, field.name, "onLoad"))
+            @export(z, .{ .name = "JNI_OnLoad", .linkage = .Strong })
+        else if (std.mem.eql(u8, field.name, "onUnload"))
+            @export(z, .{ .name = "JNI_OnUnload", .linkage = .Strong })
+        else
+            exportAs(class_name ++ "." ++ field.name, z);
     }
 }
 
@@ -89,17 +96,23 @@ fn formatStackTraceJava(writer: anytype, trace: std.builtin.StackTrace) !void {
 
 // --- Code ~~stolen~~ adapted from debug.zig ends here ---
 
-fn splitError(comptime T: std.builtin.TypeInfo) struct { error_set: ?type = null, payload: type } {
-    return switch (T) {
+fn splitError(comptime T: type) struct { error_set: ?type = null, payload: type } {
+    return switch (@typeInfo(T)) {
         .ErrorUnion => |u| .{ .error_set = u.error_set, .payload = u.payload },
         else => .{ .payload = T },
     };
 }
 
 /// NOTE: This is sadly required as @Type for Fn is not implemented so we cannot autowrap functions 
-pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@typeInfo(@TypeOf(function)).Fn.return_type.?)).payload {
-    const se = splitError(@typeInfo(@typeInfo(@TypeOf(function)).Fn.return_type.?));
-    var env: *JNIEnv = args[0];
+pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf(function)).Fn.return_type.?).payload {
+    const se = splitError(@typeInfo(@TypeOf(function)).Fn.return_type.?);
+    var env: *JNIEnv = undefined;
+
+    switch (@TypeOf(args[0])) {
+        *JNIEnv => env = args[0],
+        *JavaVM => env = args[0].getEnv(JNIVersion{ .major = 10, .minor = 0 }) catch unreachable,
+        else => unreachable,
+    }
 
     if (se.error_set) |_| {
         return @call(.{}, function, args) catch |err| {

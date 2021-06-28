@@ -17,22 +17,30 @@ pub fn getClass(self: *Reflector, name: [*:0]const u8) !Class {
 
 pub fn ObjectType(name_: []const u8) type {
     return struct {
-        pub const __isObject = true;
-        pub const name = name_;
+        pub const object_class_name = name_;
     };
 }
 
-pub const StringType = ObjectType("java/lang/String");
+pub const String = struct {
+    const Self = @This();
+    const object_class_name = "java/lang/String";
+
+    string: types.jstring,
+
+    pub fn init(string: types.jstring) Self {
+        return .{ .string = string };
+    }
+};
 
 fn valueToDescriptor(comptime T: type) descriptors.Descriptor {
-    if (@hasDecl(T, "__isObject")) {
-        return .{ .object = @field(T, "name") };
+    if (@typeInfo(T) == .Struct and @hasDecl(T, "object_class_name")) {
+        return .{ .object = @field(T, "object_class_name") };
     }
 
-    // switch (T) {
-
-    // }
-    unreachable;
+    return switch (T) {
+        types.jint => .int,
+        else => @compileError("Unsupported type: " ++ @typeName(T)),
+    };
 }
 
 fn funcToMethodDescriptor(comptime func: type) descriptors.MethodDescriptor {
@@ -77,7 +85,7 @@ pub const Class = struct {
         return T{ .class = self, .method_id = try self.reflector.env.getStaticMethodId(self.class, name, @ptrCast([*:0]const u8, buf.items)) };
     }
 
-    pub fn getStaticMethodDescriptors(self: *Self, name: [*:0]const u8, comptime descriptor: descriptors.MethodDescriptor) !StaticMethod(descriptor) {
+    pub fn getStaticMethodDescriptor(self: *Self, name: [*:0]const u8, comptime descriptor: descriptors.MethodDescriptor) !StaticMethod(descriptor) {
         var buf = std.ArrayList(u8).init(self.reflector.allocator);
         defer buf.deinit();
 
@@ -128,15 +136,11 @@ fn MapDescriptorToNativeTypeEnum(comptime value: *const descriptors.Descriptor) 
     };
 }
 
-// pub const StaticMethod = struct {
-// class: *Class,
-// method_id: types.jmethodID,
-// descriptor: descriptors.MethodDescriptor,
-
-// pub fn call(self: StaticMethod, args: anytype) MapDescriptorType(self.descriptor.return_type) {
-//     return undefined;
-// }
-// };
+fn ArgsFromDescriptor(comptime descriptor: *const descriptors.MethodDescriptor) type {
+    var Ts: [descriptor.parameters.len]type = undefined;
+    for (descriptor.parameters) |param, i| Ts[i] = MapDescriptorType(&param);
+    return std.meta.Tuple(&Ts);
+}
 
 pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {
     return struct {
@@ -146,11 +150,21 @@ pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {
         class: *Class,
         method_id: types.jmethodID,
 
-        pub fn call(self: Self, args: anytype) types.JNIEnv.CallStaticMethodError!MapDescriptorType(descriptor.return_type) {
+        pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) types.JNIEnv.CallStaticMethodError!MapDescriptorType(descriptor.return_type) {
             _ = self;
             _ = args;
 
-            return self.class.reflector.env.callStaticMethod(comptime MapDescriptorToNativeTypeEnum(descriptor.return_type), self.class.class, self.method_id, null);
+            var processed_args: [args.len]types.jvalue = undefined;
+            comptime var index: usize = 0;
+            inline while (index < args.len) : (index += 1) {
+                processed_args[index] = types.jvalue.toJValue(args[index]);
+            }
+
+            return self.callJValues(&processed_args);
+        }
+
+        pub fn callJValues(self: Self, args: []types.jvalue) types.JNIEnv.CallStaticMethodError!MapDescriptorType(descriptor.return_type) {
+            return self.class.reflector.env.callStaticMethod(comptime MapDescriptorToNativeTypeEnum(descriptor.return_type), self.class.class, self.method_id, if (args.len == 0) null else @ptrCast([*]types.jvalue, args));
         }
     };
 }
