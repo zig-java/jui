@@ -137,6 +137,8 @@ pub const jvalue = extern union {
     l: jobject,
 
     pub fn toJValue(value: anytype) jvalue {
+        if (@typeInfo(@TypeOf(value)) == .Struct and @hasDecl(@TypeOf(value), "toJValue")) return @field(value, "toJValue")();
+
         return switch (@TypeOf(value)) {
             jboolean => .{ .z = value },
             jbyte => .{ .b = value },
@@ -938,7 +940,7 @@ pub const JNIEnv = extern struct {
 
     /// Constructs a new java.lang.String object from an array of Unicode characters
     pub fn newString(self: *Self, unicode_chars: []const u16) NewStringError!jstring {
-        var maybe_jstring = self.interface.NewString(self, unicode_chars, unicode_chars.len);
+        var maybe_jstring = self.interface.NewString(self, @ptrCast([*]const u16, unicode_chars), @intCast(jsize, unicode_chars.len));
         return if (maybe_jstring) |string|
             string
         else
@@ -1000,7 +1002,7 @@ pub const JNIEnv = extern struct {
     }
 
     /// Informs the VM that the native code no longer needs access to chars
-    pub fn releaseStringUTFChars(self: *Self, string: jstring, chars: [*]const u8) void {
+    pub fn releaseStringUTFChars(self: *Self, string: jstring, chars: [*:0]const u8) void {
         self.interface.ReleaseStringUTFChars(self, string, chars);
     }
 

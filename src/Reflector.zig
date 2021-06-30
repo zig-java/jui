@@ -21,14 +21,47 @@ pub fn ObjectType(name_: []const u8) type {
     };
 }
 
+pub const StringChars = union(enum) {
+    utf8: [:0]const u8,
+    unicode: []const u16,
+};
+
 pub const String = struct {
     const Self = @This();
     const object_class_name = "java/lang/String";
 
+    reflector: *Reflector,
+    chars: StringChars,
     string: types.jstring,
 
-    pub fn init(string: types.jstring) Self {
-        return .{ .string = string };
+    pub fn init(reflector: *Reflector, chars: StringChars) !Self {
+        var string = try switch (chars) {
+            .utf8 => |buf| reflector.env.newStringUTF(@ptrCast([*:0]const u8, buf)),
+            .unicode => |buf| reflector.env.newString(buf),
+        };
+
+        return Self{ .reflector = reflector, .chars = chars, .string = string };
+    }
+
+    /// Only use when a string is `get`-ed
+    /// Tells the JVM that the string you've obtained is no longer being used
+    pub fn release(self: Self) void {
+        switch (self.chars) {
+            .utf8 => |buf| self.reflector.env.releaseStringUTFChars(self.string, buf),
+            .unicode => |buf| self.reflector.env.releaseStringChars(self.string, @ptrCast([*]const u16, buf)),
+        }
+    }
+
+    pub fn toJValue(self: Self) types.jvalue {
+        return .{ .l = self.string };
+    }
+
+    pub fn fromJValue(reflector: *Reflector, value: types.jvalue) !Self {
+        const object = value.l;
+        var chars_len = reflector.env.getStringUTFLength(object);
+        var chars_ret = try reflector.env.getStringUTFChars(object);
+
+        return Self{ .reflector = reflector, .chars = .{ .utf8 = @bitCast([:0]const u8, chars_ret.chars[0 .. @intCast(usize, chars_len) + 1]) }, .string = object };
     }
 };
 
@@ -96,7 +129,7 @@ pub const Class = struct {
     }
 };
 
-fn MapDescriptorType(comptime value: *const descriptors.Descriptor) type {
+fn MapDescriptorLowLevelType(comptime value: *const descriptors.Descriptor) type {
     return switch (value.*) {
         .byte => types.jbyte,
         .char => types.jchar,
@@ -112,6 +145,30 @@ fn MapDescriptorType(comptime value: *const descriptors.Descriptor) type {
         .void => unreachable,
 
         .object => types.jobject,
+        .array => types.jarray,
+        .method => unreachable,
+    };
+}
+
+fn MapDescriptorType(comptime value: *const descriptors.Descriptor) type {
+    return switch (value.*) {
+        .byte => types.jbyte,
+        .char => types.jchar,
+
+        .int => types.jint,
+        .long => types.jlong,
+        .short => types.jshort,
+
+        .float => types.jfloat,
+        .double => types.jdouble,
+
+        .boolean => types.jboolean,
+        .void => unreachable,
+
+        .object => |name| if (std.mem.eql(u8, name, "java/lang/String"))
+            String
+        else
+            types.jobject,
         .array => types.jarray,
         .method => unreachable,
     };
@@ -150,7 +207,7 @@ pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {
         class: *Class,
         method_id: types.jmethodID,
 
-        pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) types.JNIEnv.CallStaticMethodError!MapDescriptorType(descriptor.return_type) {
+        pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) !MapDescriptorType(descriptor.return_type) {
             _ = self;
             _ = args;
 
@@ -160,10 +217,12 @@ pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {
                 processed_args[index] = types.jvalue.toJValue(args[index]);
             }
 
-            return self.callJValues(&processed_args);
+            var ret = try self.callJValues(&processed_args);
+            const mdt = MapDescriptorType(descriptor.return_type);
+            return if (@typeInfo(mdt) == .Struct and @hasDecl(mdt, "fromJValue")) @field(mdt, "fromJValue")(self.class.reflector, .{ .l = ret }) else ret;
         }
 
-        pub fn callJValues(self: Self, args: []types.jvalue) types.JNIEnv.CallStaticMethodError!MapDescriptorType(descriptor.return_type) {
+        pub fn callJValues(self: Self, args: []types.jvalue) types.JNIEnv.CallStaticMethodError!MapDescriptorLowLevelType(descriptor.return_type) {
             return self.class.reflector.env.callStaticMethod(comptime MapDescriptorToNativeTypeEnum(descriptor.return_type), self.class.class, self.method_id, if (args.len == 0) null else @ptrCast([*]types.jvalue, args));
         }
     };
