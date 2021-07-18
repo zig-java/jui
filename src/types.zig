@@ -109,6 +109,7 @@ pub const NativeType = enum {
     long,
     float,
     double,
+    @"void",
 };
 
 pub fn MapNativeType(comptime native_type: NativeType) type {
@@ -122,6 +123,7 @@ pub fn MapNativeType(comptime native_type: NativeType) type {
         .long => jlong,
         .float => jfloat,
         .double => jdouble,
+        .@"void" => void,
     };
 }
 
@@ -773,6 +775,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.GetLongField,
             .float => self.interface.GetFloatField,
             .double => self.interface.GetDoubleField,
+            .void => @compileError("Field cannot be of type 'void'"),
         })(self, object, field_id);
     }
 
@@ -788,6 +791,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.SetLongField,
             .float => self.interface.SetFloatField,
             .double => self.interface.SetDoubleField,
+            .void => @compileError("Field cannot be of type 'void'"),
         })(self, object, field_id, value);
     }
 
@@ -824,6 +828,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.CallLongMethodA,
             .float => self.interface.CallFloatMethodA,
             .double => self.interface.CallDoubleMethodA,
+            .void => self.interface.CallVoidMethodA,
         })(self, object, method_id, args);
 
         return if (self.hasPendingException()) error.Exception else value;
@@ -843,6 +848,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.CallNonvirtualLongMethodA,
             .float => self.interface.CallNonvirtualFloatMethodA,
             .double => self.interface.CallNonvirtualDoubleMethodA,
+            .void => self.interface.CallNonvirtualVoidMethodA,
         })(self, object, class, method_id, args);
 
         return if (self.hasPendingException()) error.Exception else value;
@@ -878,6 +884,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.GetStaticLongField,
             .float => self.interface.GetStaticFloatField,
             .double => self.interface.GetStaticDoubleField,
+            .void => @compileError("Field cannot be of type 'void'"),
         })(self, class, field_id);
     }
 
@@ -893,6 +900,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.SetStaticLongField,
             .float => self.interface.SetStaticFloatField,
             .double => self.interface.SetStaticDoubleField,
+            .void => unreachable,
         })(self, class, field_id, value);
     }
 
@@ -929,6 +937,7 @@ pub const JNIEnv = extern struct {
             .long => self.interface.CallStaticLongMethodA,
             .float => self.interface.CallStaticFloatMethodA,
             .double => self.interface.CallStaticDoubleMethodA,
+            .void => self.interface.CallStaticVoidMethodA,
         })(self, class, method_id, args);
 
         return if (self.hasPendingException()) error.Exception else value;

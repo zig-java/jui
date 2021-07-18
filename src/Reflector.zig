@@ -72,6 +72,7 @@ fn valueToDescriptor(comptime T: type) descriptors.Descriptor {
 
     return switch (T) {
         types.jint => .int,
+        void => .@"void",
         else => @compileError("Unsupported type: " ++ @typeName(T)),
     };
 }
@@ -90,9 +91,28 @@ fn funcToMethodDescriptor(comptime func: type) descriptors.MethodDescriptor {
     };
 }
 
-pub fn sm(comptime func: type) type {
+fn sm(comptime func: type) type {
     return StaticMethod(funcToMethodDescriptor(func));
 }
+
+fn nsm(comptime func: type) type {
+    return Method(funcToMethodDescriptor(func));
+}
+
+fn cnsm(comptime func: type) type {
+    return Constructor(funcToMethodDescriptor(func));
+}
+
+pub const Object = struct {
+    const Self = @This();
+
+    class: *Class,
+    object: types.jobject,
+
+    pub fn init(class: *Class, object: types.jobject) Self {
+        return .{ .class = class, .object = object };
+    }
+};
 
 pub const Class = struct {
     const Self = @This();
@@ -102,6 +122,39 @@ pub const Class = struct {
 
     pub fn init(reflector: *Reflector, class: types.jclass) Self {
         return .{ .reflector = reflector, .class = class };
+    }
+
+    /// Creates an instance of the current class without invoking constructors
+    pub fn create(self: *Self) !Object {
+        return Object.init(self, try self.reflector.env.allocObject(self.class));
+    }
+
+    pub fn getConstructor(self: *Self, comptime func: type) !cnsm(func) {
+        return try self.getConstructor_(cnsm(func));
+    }
+
+    fn getConstructor_(self: *Self, comptime T: type) !T {
+        var buf = std.ArrayList(u8).init(self.reflector.allocator);
+        defer buf.deinit();
+
+        try @field(T, "descriptor_").toStringArrayList(&buf);
+        try buf.append(0);
+
+        return T{ .class = self, .method_id = try self.reflector.env.getMethodId(self.class, "<init>", @ptrCast([*:0]const u8, buf.items)) };
+    }
+
+    pub fn getMethod(self: *Self, name: [*:0]const u8, comptime func: type) !nsm(func) {
+        return try self.getMethod_(nsm(func), name);
+    }
+
+    fn getMethod_(self: *Self, comptime T: type, name: [*:0]const u8) !T {
+        var buf = std.ArrayList(u8).init(self.reflector.allocator);
+        defer buf.deinit();
+
+        try @field(T, "descriptor_").toStringArrayList(&buf);
+        try buf.append(0);
+
+        return T{ .class = self, .method_id = try self.reflector.env.getMethodId(self.class, name, @ptrCast([*:0]const u8, buf.items)) };
     }
 
     pub fn getStaticMethod(self: *Self, name: [*:0]const u8, comptime func: type) !sm(func) {
@@ -116,16 +169,6 @@ pub const Class = struct {
         try buf.append(0);
 
         return T{ .class = self, .method_id = try self.reflector.env.getStaticMethodId(self.class, name, @ptrCast([*:0]const u8, buf.items)) };
-    }
-
-    pub fn getStaticMethodDescriptor(self: *Self, name: [*:0]const u8, comptime descriptor: descriptors.MethodDescriptor) !StaticMethod(descriptor) {
-        var buf = std.ArrayList(u8).init(self.reflector.allocator);
-        defer buf.deinit();
-
-        try descriptor.toStringArrayList(&buf);
-        try buf.append(0);
-
-        return StaticMethod(descriptor){ .class = self, .method_id = try self.reflector.env.getStaticMethodId(self.class, name, @ptrCast([*:0]const u8, buf.items)) };
     }
 };
 
@@ -142,7 +185,7 @@ fn MapDescriptorLowLevelType(comptime value: *const descriptors.Descriptor) type
         .double => types.jdouble,
 
         .boolean => types.jboolean,
-        .void => unreachable,
+        .void => void,
 
         .object => types.jobject,
         .array => types.jarray,
@@ -163,7 +206,7 @@ fn MapDescriptorType(comptime value: *const descriptors.Descriptor) type {
         .double => types.jdouble,
 
         .boolean => types.jboolean,
-        .void => unreachable,
+        .void => void,
 
         .object => |name| if (std.mem.eql(u8, name, "java/lang/String"))
             String
@@ -189,7 +232,8 @@ fn MapDescriptorToNativeTypeEnum(comptime value: *const descriptors.Descriptor) 
         .boolean => .boolean,
 
         .object, .array => .object,
-        .method, .void => unreachable,
+        .void => .void,
+        .method => unreachable,
     };
 }
 
@@ -197,6 +241,62 @@ fn ArgsFromDescriptor(comptime descriptor: *const descriptors.MethodDescriptor) 
     var Ts: [descriptor.parameters.len]type = undefined;
     for (descriptor.parameters) |param, i| Ts[i] = MapDescriptorType(&param);
     return std.meta.Tuple(&Ts);
+}
+
+pub fn Constructor(descriptor: descriptors.MethodDescriptor) type {
+    return struct {
+        const Self = @This();
+        pub const descriptor_ = descriptor;
+
+        class: *Class,
+        method_id: types.jmethodID,
+
+        pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) !Object {
+            _ = self;
+            _ = args;
+
+            var processed_args: [args.len]types.jvalue = undefined;
+            comptime var index: usize = 0;
+            inline while (index < args.len) : (index += 1) {
+                processed_args[index] = types.jvalue.toJValue(args[index]);
+            }
+
+            return Object.init(self.class, try self.callJValues(&processed_args));
+        }
+
+        pub fn callJValues(self: Self, args: []types.jvalue) types.JNIEnv.NewObjectError!types.jobject {
+            return self.class.reflector.env.newObject(self.class.class, self.method_id, if (args.len == 0) null else @ptrCast([*]types.jvalue, args));
+        }
+    };
+}
+
+pub fn Method(descriptor: descriptors.MethodDescriptor) type {
+    return struct {
+        const Self = @This();
+        pub const descriptor_ = descriptor;
+
+        class: *Class,
+        method_id: types.jmethodID,
+
+        pub fn call(self: Self, object: Object, args: ArgsFromDescriptor(&descriptor)) !MapDescriptorType(descriptor.return_type) {
+            _ = self;
+            _ = args;
+
+            var processed_args: [args.len]types.jvalue = undefined;
+            comptime var index: usize = 0;
+            inline while (index < args.len) : (index += 1) {
+                processed_args[index] = types.jvalue.toJValue(args[index]);
+            }
+
+            var ret = try self.callJValues(object.object, &processed_args);
+            const mdt = MapDescriptorType(descriptor.return_type);
+            return if (@typeInfo(mdt) == .Struct and @hasDecl(mdt, "fromJValue")) @field(mdt, "fromJValue")(self.class.reflector, .{ .l = ret }) else ret;
+        }
+
+        pub fn callJValues(self: Self, object: types.jobject, args: []types.jvalue) types.JNIEnv.CallStaticMethodError!MapDescriptorLowLevelType(descriptor.return_type) {
+            return self.class.reflector.env.callMethod(comptime MapDescriptorToNativeTypeEnum(descriptor.return_type), object, self.method_id, if (args.len == 0) null else @ptrCast([*]types.jvalue, args));
+        }
+    };
 }
 
 pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {

@@ -19,10 +19,12 @@ fn onUnload(vm: *jui.JavaVM) void {
 fn greet(env: *jui.JNIEnv, this_object: jui.jobject) !jui.jstring {
     _ = this_object;
 
-    var System = try reflector.getClass("java/lang/Integer");
-    var toString = try System.getStaticMethod("toString", fn (int: jui.jint) String);
+    var Integer = try reflector.getClass("java/lang/Integer");
+    var constructor = try Integer.getConstructor(fn (int: jui.jint) void);
+    var int = try constructor.call(.{12});
 
-    var string = try toString.call(.{42069});
+    var toString = try Integer.getMethod("toString", fn () String);
+    var string: String = try toString.call(int, .{});
     defer string.release();
 
     var buf: [256]u8 = undefined;
