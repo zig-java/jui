@@ -56,12 +56,15 @@ pub const String = struct {
         return .{ .l = self.string };
     }
 
-    pub fn fromJValue(reflector: *Reflector, value: types.jvalue) !Self {
-        const object = value.l;
+    pub fn fromObject(reflector: *Reflector, object: types.jobject) !Self {
         var chars_len = reflector.env.getStringUTFLength(object);
         var chars_ret = try reflector.env.getStringUTFChars(object);
 
-        return Self{ .reflector = reflector, .chars = .{ .utf8 = @bitCast([:0]const u8, chars_ret.chars[0 .. @intCast(usize, chars_len) + 1]) }, .string = object };
+        return Self{ .reflector = reflector, .chars = .{ .utf8 = @bitCast([:0]const u8, chars_ret.chars[0..@intCast(usize, chars_len)]) }, .string = object };
+    }
+
+    pub fn fromJValue(reflector: *Reflector, value: types.jvalue) !Self {
+        return fromObject(reflector, value.l);
     }
 };
 

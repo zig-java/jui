@@ -16,19 +16,13 @@ fn onUnload(vm: *jui.JavaVM) void {
     _ = vm;
 }
 
-fn greet(env: *jui.JNIEnv, this_object: jui.jobject) !jui.jstring {
+fn greet(env: *jui.JNIEnv, this_object: jui.jobject, string: String) !jui.jstring {
     _ = this_object;
 
-    var Integer = try reflector.getClass("java/lang/Integer");
-    var constructor = try Integer.getConstructor(fn (int: jui.jint) void);
-    var int = try constructor.call(.{12});
-
-    var toString = try Integer.getMethod("toString", fn () String);
-    var string: String = try toString.call(int, .{});
     defer string.release();
 
     var buf: [256]u8 = undefined;
-    return try env.newStringUTF(try std.fmt.bufPrintZ(&buf, "Your number is: {s}", .{string.chars.utf8}));
+    return try env.newStringUTF(try std.fmt.bufPrintZ(&buf, "Hey {s}!", .{string.chars.utf8[0..]}));
 }
 
 comptime {
@@ -41,8 +35,8 @@ comptime {
             return jui.wrapErrors(onUnload, .{vm});
         }
 
-        fn greetWrapped(env: *jui.JNIEnv, class: jui.jclass) callconv(.C) jui.jstring {
-            return jui.wrapErrors(greet, .{ env, class });
+        fn greetWrapped(env: *jui.JNIEnv, class: jui.jclass, string: jui.jstring) callconv(.C) jui.jstring {
+            return jui.wrapErrors(greet, .{ env, class, String.fromObject(&reflector, string) catch unreachable });
         }
     };
 

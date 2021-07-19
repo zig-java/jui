@@ -5,11 +5,11 @@ public final class JNIExample {
         System.loadLibrary("jni_example");
     }
   
-    public static native String greet();
+    public static native String greet(String name);
 
     public static void main(String[] args) {
         try {
-            System.out.println(greet());
+            System.out.println(greet("abc"));
         } catch (Exception e) {
             System.out.println("Big bad Zig error handled in Java >:(");
             e.printStackTrace();
