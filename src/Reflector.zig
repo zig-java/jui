@@ -60,7 +60,7 @@ pub const String = struct {
         var chars_len = reflector.env.getStringUTFLength(object);
         var chars_ret = try reflector.env.getStringUTFChars(object);
 
-        return Self{ .reflector = reflector, .chars = .{ .utf8 = @bitCast([:0]const u8, chars_ret.chars[0..@intCast(usize, chars_len)]) }, .string = object };
+        return Self{ .reflector = reflector, .chars = .{ .utf8 = std.meta.assumeSentinel(chars_ret.chars[0..@intCast(usize, chars_len)], 0) }, .string = object };
     }
 
     pub fn fromJValue(reflector: *Reflector, value: types.jvalue) !Self {
