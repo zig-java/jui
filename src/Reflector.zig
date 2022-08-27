@@ -4,10 +4,10 @@ const descriptors = @import("descriptors.zig");
 
 const Reflector = @This();
 
-allocator: *std.mem.Allocator,
+allocator: std.mem.Allocator,
 env: *types.JNIEnv,
 
-pub fn init(allocator: *std.mem.Allocator, env: *types.JNIEnv) Reflector {
+pub fn init(allocator: std.mem.Allocator, env: *types.JNIEnv) Reflector {
     return .{ .allocator = allocator, .env = env };
 }
 

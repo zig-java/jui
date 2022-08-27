@@ -1,8 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const descriptors = @import("descriptors.zig");
 pub const Reflector = @import("Reflector.zig");
-pub usingnamespace @import("types.zig");
+const types = @import("types.zig");
+
+pub usingnamespace types;
 
 pub fn exportAs(comptime name: []const u8, function: anytype) void {
     var z: [name.len]u8 = undefined;
@@ -27,26 +30,7 @@ pub fn exportUnder(comptime class_name: []const u8, functions: anytype) void {
     }
 }
 
-// --- Code ~~stolen~~ adapted from debug.zig starts here ---
-// Copyright (c) 2015-2021 Zig Contributors
-// This code is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
-/// This is required because SymbolInfo doesn't expose its deinit for some weird reason
-fn deinitSymbolInfo(self: std.debug.SymbolInfo) void {
-    if (self.line_info) |li| {
-        deinitLineInfo(li);
-    }
-}
-
-/// This is required because LineInfo doesn't expose its deinit for some weird reason
-fn deinitLineInfo(self: std.debug.LineInfo) void {
-    const allocator = self.allocator orelse return;
-    allocator.free(self.file_name);
-}
-
-fn printSourceAtAddressJava(debug_info: *std.debug.DebugInfo, writer: anytype, address: usize) !void {
+fn printSourceAtAddressJava(allocator: std.mem.Allocator, debug_info: *std.debug.DebugInfo, writer: anytype, address: usize) !void {
     const module = debug_info.getModuleForAddress(address) catch |err| switch (err) {
         error.MissingDebugInfo, error.InvalidDebugInfo => {
             return try writer.writeAll((" " ** 8) ++ "at unknown (missing/invalud debug info)");
@@ -54,8 +38,8 @@ fn printSourceAtAddressJava(debug_info: *std.debug.DebugInfo, writer: anytype, a
         else => return err,
     };
 
-    const symbol_info = try module.getSymbolAtAddress(address);
-    defer deinitSymbolInfo(symbol_info);
+    const symbol_info = try module.getSymbolAtAddress(allocator, address);
+    defer symbol_info.deinit(allocator);
 
     if (symbol_info.line_info) |li| {
         try writer.print((" " ** 8) ++ "at {s}({s}:{d}:{d})", .{ symbol_info.symbol_name, li.file_name, li.line, li.column });
@@ -65,11 +49,12 @@ fn printSourceAtAddressJava(debug_info: *std.debug.DebugInfo, writer: anytype, a
 }
 
 fn writeStackTraceJava(
+    allocator: std.mem.Allocator,
     stack_trace: std.builtin.StackTrace,
     writer: anytype,
     debug_info: *std.debug.DebugInfo,
 ) !void {
-    if (std.builtin.strip_debug_info) return error.MissingDebugInfo;
+    if (builtin.strip_debug_info) return error.MissingDebugInfo;
 
     var frame_index: usize = 0;
     var frames_left: usize = std.math.min(stack_trace.index, stack_trace.instruction_addresses.len);
@@ -79,7 +64,7 @@ fn writeStackTraceJava(
         frame_index = (frame_index + 1) % stack_trace.instruction_addresses.len;
     }) {
         const return_address = stack_trace.instruction_addresses[frame_index];
-        try printSourceAtAddressJava(debug_info, writer, return_address - 1);
+        try printSourceAtAddressJava(allocator, debug_info, writer, return_address - 1);
         if (frames_left != 1) try writer.writeByte('\n');
     }
 }
@@ -89,7 +74,7 @@ fn formatStackTraceJava(writer: anytype, trace: std.builtin.StackTrace) !void {
     defer arena.deinit();
     const debug_info = std.debug.getSelfDebugInfo() catch return;
     try writer.writeAll("\n");
-    writeStackTraceJava(trace, writer, debug_info) catch |err| {
+    writeStackTraceJava(arena.allocator(), trace, writer, debug_info) catch |err| {
         try writer.print("Unable to print stack trace: {s}\n", .{@errorName(err)});
     };
 }
@@ -103,14 +88,14 @@ fn splitError(comptime T: type) struct { error_set: ?type = null, payload: type 
     };
 }
 
-/// NOTE: This is sadly required as @Type for Fn is not implemented so we cannot autowrap functions 
+/// NOTE: This is sadly required as @Type for Fn is not implemented so we cannot autowrap functions
 pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf(function)).Fn.return_type.?).payload {
     const se = splitError(@typeInfo(@TypeOf(function)).Fn.return_type.?);
-    var env: *JNIEnv = undefined;
+    var env: *types.JNIEnv = undefined;
 
     switch (@TypeOf(args[0])) {
-        *JNIEnv => env = args[0],
-        *JavaVM => env = args[0].getEnv(JNIVersion{ .major = 10, .minor = 0 }) catch unreachable,
+        *types.JNIEnv => env = args[0],
+        *types.JavaVM => env = args[0].getEnv(types.JNIVersion{ .major = 10, .minor = 0 }) catch unreachable,
         else => unreachable,
     }
 
@@ -132,7 +117,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
                 return std.mem.zeroes(se.payload);
             } else {
                 var buf: [512]u8 = undefined;
-                var msg = std.fmt.bufPrintZ(&buf, "{s}", .{err}) catch unreachable;
+                var msg = std.fmt.bufPrintZ(&buf, "{s}", .{@errorName(err)}) catch unreachable;
                 env.throwGeneric(msg) catch unreachable;
 
                 return std.mem.zeroes(se.payload);

@@ -2,74 +2,84 @@
 //! This file contains those definitions and others
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Stolen from https://github.com/ziglang/zig/pull/6272
-pub const va_list = switch (std.builtin.target.cpu.arch) {
-    .aarch64 => switch (std.builtin.target.os.tag) {
+pub const va_list = switch (builtin.target.cpu.arch) {
+    .aarch64 => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
         .ios, .macosx, .tvos, .watchos => [*c]u8,
         else => [1]extern struct {
-            __stack: *c_void,
-            __gr_top: *c_void,
-            __vr_top: *c_void,
+            __stack: *anyopaque,
+            __gr_top: *anyopaque,
+            __vr_top: *anyopaque,
             __gr_offs: c_int,
             __vr_offs: c_int,
         },
     },
-    .sparc, .wasm32, .wasm64 => *c_void,
-    .powerpc => switch (std.builtin.target.os.tag) {
+    .sparc, .wasm32, .wasm64 => *anyopaque,
+    .powerpc => switch (builtin.target.os.tag) {
         .ios, .macosx, .tvos, .watchos, .aix => [*c]u8,
         else => [1]extern struct {
             gpr: u8,
             fpr: u8,
             reserved: u16,
-            overflow_arg_area: *c_void,
-            reg_save_area: *c_void,
+            overflow_arg_area: *anyopaque,
+            reg_save_area: *anyopaque,
         },
     },
     .s390x => [1]extern struct {
         __gpr: c_long,
         __fpr: c_long,
-        __overflow_arg_area: *c_void,
-        __reg_save_area: *c_void,
+        __overflow_arg_area: *anyopaque,
+        __reg_save_area: *anyopaque,
     },
     .i386 => [*c]u8,
-    .x86_64 => switch (std.builtin.target.os.tag) {
+    .x86_64 => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
         else => [1]extern struct {
             gp_offset: c_uint,
             fp_offset: c_uint,
-            overflow_arg_area: *c_void,
-            reg_save_area: *c_void,
+            overflow_arg_area: *anyopaque,
+            reg_save_area: *anyopaque,
         },
     },
     else => @compileError("va_list not supported for this target yet"),
 };
 
-const os = std.builtin.target.os.tag;
-const cpu_bit_count = std.builtin.target.cpu.arch.ptrBitWidth();
+const os = builtin.target.os.tag;
+const cpu_bit_count = builtin.target.cpu.arch.ptrBitWidth();
 
 // TODO: Add support for every other missing os / architecture
 // I haven't found a place that contains `jni_md.h`s for every
 // possible os-arch combo, it seems we'll have to install Java
 // sources for every combo and manually extract the file
 
-// pub const JNICALL: std.builtin.CallingConvention = .Stdcall;
+// pub const JNICALL: builtin.CallingConvention = .Stdcall;
 pub const JNICALL: std.builtin.CallingConvention = .C;
 
 pub const jint = switch (os) {
     .windows => c_long,
-    else => @compileError("Not supported bidoof"),
+    else => c_int,
+
+    // TODO:
+    // @compileError("Not supported bidoof"),
 };
 
 pub const jlong = switch (os) {
     .windows => i64,
-    else => @compileError("Not supported bidoof"),
+    else => i64,
+
+    // TODO:
+    // @compileError("Not supported bidoof"),
 };
 
 pub const jbyte = switch (os) {
     .windows => i8,
-    else => @compileError("Not supported bidoof"),
+    else => i8,
+
+    // TODO:
+    // @compileError("Not supported bidoof"),
 };
 
 pub const jboolean = u8;
@@ -195,14 +205,14 @@ pub const JNIFailureError = error{
 pub const JNINativeMethod = extern struct {
     name: [*c]u8,
     signature: [*c]u8,
-    fnPtr: ?*c_void,
+    fnPtr: ?*anyopaque,
 };
 
 const JNINativeInterface = extern struct {
-    reserved0: ?*c_void,
-    reserved1: ?*c_void,
-    reserved2: ?*c_void,
-    reserved3: ?*c_void,
+    reserved0: ?*anyopaque,
+    reserved1: ?*anyopaque,
+    reserved2: ?*anyopaque,
+    reserved3: ?*anyopaque,
 
     GetVersion: fn ([*c]JNIEnv) callconv(JNICALL) jint,
     DefineClass: fn ([*c]JNIEnv, [*c]const u8, jobject, [*c]const jbyte, jsize) callconv(JNICALL) jclass,
@@ -422,30 +432,30 @@ const JNINativeInterface = extern struct {
     GetJavaVM: fn ([*c]JNIEnv, [*c][*c]JavaVM) callconv(JNICALL) jint,
     GetStringRegion: fn ([*c]JNIEnv, jstring, jsize, jsize, [*c]jchar) callconv(JNICALL) void,
     GetStringUTFRegion: fn ([*c]JNIEnv, jstring, jsize, jsize, [*c]u8) callconv(JNICALL) void,
-    GetPrimitiveArrayCritical: fn ([*c]JNIEnv, jarray, [*c]jboolean) callconv(JNICALL) ?*c_void,
-    ReleasePrimitiveArrayCritical: fn ([*c]JNIEnv, jarray, ?*c_void, jint) callconv(JNICALL) void,
+    GetPrimitiveArrayCritical: fn ([*c]JNIEnv, jarray, [*c]jboolean) callconv(JNICALL) ?*anyopaque,
+    ReleasePrimitiveArrayCritical: fn ([*c]JNIEnv, jarray, ?*anyopaque, jint) callconv(JNICALL) void,
     GetStringCritical: fn ([*c]JNIEnv, jstring, [*c]jboolean) callconv(JNICALL) [*c]const jchar,
     ReleaseStringCritical: fn ([*c]JNIEnv, jstring, [*c]const jchar) callconv(JNICALL) void,
     NewWeakGlobalRef: fn ([*c]JNIEnv, jobject) callconv(JNICALL) jweak,
     DeleteWeakGlobalRef: fn ([*c]JNIEnv, jweak) callconv(JNICALL) void,
     ExceptionCheck: fn ([*c]JNIEnv) callconv(JNICALL) jboolean,
-    NewDirectByteBuffer: fn ([*c]JNIEnv, ?*c_void, jlong) callconv(JNICALL) jobject,
-    GetDirectBufferAddress: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ?*c_void,
+    NewDirectByteBuffer: fn ([*c]JNIEnv, ?*anyopaque, jlong) callconv(JNICALL) jobject,
+    GetDirectBufferAddress: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ?*anyopaque,
     GetDirectBufferCapacity: fn ([*c]JNIEnv, jobject) callconv(JNICALL) jlong,
     GetObjectReferenceKind: fn ([*c]JNIEnv, jobject) callconv(JNICALL) ObjectReferenceKind,
     GetModule: fn ([*c]JNIEnv, jclass) callconv(JNICALL) jobject,
 };
 
 const JNIInvokeInterface = extern struct {
-    reserved0: ?*c_void,
-    reserved1: ?*c_void,
-    reserved2: ?*c_void,
+    reserved0: ?*anyopaque,
+    reserved1: ?*anyopaque,
+    reserved2: ?*anyopaque,
 
     DestroyJavaVM: fn ([*c]JavaVM) callconv(JNICALL) jint,
-    AttachCurrentThread: fn ([*c]JavaVM, [*c]?*c_void, ?*c_void) callconv(JNICALL) jint,
+    AttachCurrentThread: fn ([*c]JavaVM, [*c]?*anyopaque, ?*anyopaque) callconv(JNICALL) jint,
     DetachCurrentThread: fn ([*c]JavaVM) callconv(JNICALL) jint,
-    GetEnv: fn ([*c]JavaVM, [*c]?*c_void, jint) callconv(JNICALL) jint,
-    AttachCurrentThreadAsDaemon: fn ([*c]JavaVM, [*c]?*c_void, ?*c_void) callconv(JNICALL) jint,
+    GetEnv: fn ([*c]JavaVM, [*c]?*anyopaque, jint) callconv(JNICALL) jint,
+    AttachCurrentThreadAsDaemon: fn ([*c]JavaVM, [*c]?*anyopaque, ?*anyopaque) callconv(JNICALL) jint,
 };
 
 fn handleFailureError(return_val: jint) JNIFailureError!void {
@@ -1071,7 +1081,7 @@ pub const JavaVM = extern struct {
 
     pub fn getEnv(self: *Self, version: JNIVersion) JNIFailureError!*JNIEnv {
         var env: *JNIEnv = undefined;
-        try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*c_void, &env), @bitCast(jint, version)));
+        try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*anyopaque, &env), @bitCast(jint, version)));
         return env;
     }
 };
