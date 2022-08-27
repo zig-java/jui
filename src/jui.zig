@@ -5,6 +5,10 @@ pub const descriptors = @import("descriptors.zig");
 pub const Reflector = @import("Reflector.zig");
 const types = @import("types.zig");
 
+// Some break changes in zig 0.10.0-dev
+// This code must be removed once the 0.10 was released
+const is_zig_master = builtin.zig_version.major >= 0 and builtin.zig_version.minor >= 10;
+
 pub usingnamespace types;
 
 pub fn exportAs(comptime name: []const u8, function: anytype) void {
@@ -38,8 +42,12 @@ fn printSourceAtAddressJava(allocator: std.mem.Allocator, debug_info: *std.debug
         else => return err,
     };
 
-    const symbol_info = try module.getSymbolAtAddress(allocator, address);
-    defer symbol_info.deinit(allocator);
+    const symbol_info = if (comptime is_zig_master)
+        try module.getSymbolAtAddress(allocator, address)
+    else
+        try module.getSymbolAtAddress(address);
+
+    defer if (comptime is_zig_master) symbol_info.deinit(allocator) else symbol_info.deinit();
 
     if (symbol_info.line_info) |li| {
         try writer.print((" " ** 8) ++ "at {s}({s}:{d}:{d})", .{ symbol_info.symbol_name, li.file_name, li.line, li.column });

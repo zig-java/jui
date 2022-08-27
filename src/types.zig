@@ -4,6 +4,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// builtin.zig_backend decl exists
+// This code must be removed once the 0.10 was released
+const is_stage2 = @hasDecl(builtin, "zig_backend") and builtin.zig_backend != .stage1;
+
 /// Stolen from https://github.com/ziglang/zig/pull/6272
 /// [1]extern struct isn't allowed, see https://github.com/ziglang/zig/issues/6535
 pub const va_list = switch (builtin.target.cpu.arch) {
@@ -212,7 +216,7 @@ pub const JNINativeMethod = extern struct {
 // Instead of using std.meta.FnPtr for each declaration,
 // Just duplicating all structs here, with fn(..) and *const fn
 // This way it's easier to just delete when stage1 was removed
-const JNINativeInterface = if (builtin.zig_backend != .stage1)
+const JNINativeInterface = if (is_stage2)
     extern struct {
         reserved0: ?*anyopaque,
         reserved1: ?*anyopaque,
@@ -692,7 +696,7 @@ else
 // Instead of using std.meta.FnPtr for each declaration,
 // Just duplicating all structs here, with fn(..) and *const fn
 // This way it's easier to just delete when stage1 was removed
-const JNIInvokeInterface = if (builtin.zig_backend != .stage1)
+const JNIInvokeInterface = if (is_stage2)
     extern struct {
         reserved0: ?*anyopaque,
         reserved1: ?*anyopaque,
