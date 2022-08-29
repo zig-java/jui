@@ -1053,7 +1053,7 @@ pub const JNIEnv = extern struct {
     }
 
     /// Sets the value of a field
-    pub fn setField(self: *Self, comptime native_type: NativeType, object: jobject, field_id: jobject, value: MapNativeType(native_type)) void {
+    pub fn setField(self: *Self, comptime native_type: NativeType, object: jobject, field_id: jfieldID, value: MapNativeType(native_type)) void {
         (switch (native_type) {
             .object => self.interface.SetObjectField,
             .boolean => self.interface.SetBooleanField,
