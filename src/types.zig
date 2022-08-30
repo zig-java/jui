@@ -1335,6 +1335,25 @@ pub const JNIEnv = extern struct {
     }
 
     // Variety Pack
+
+    /// Returns the memory region referenced by the given direct java.nio.Buffer.
+    /// This function allows native code to access the same memory region that is accessible to Java code via the buffer object.
+    pub fn getDirectBufferAddress(self: *Self, buf: jobject) []u8 {
+        const ptr = self.interface.GetDirectBufferAddress(self, buf);
+        const len = @bitCast(usize, self.interface.GetDirectBufferCapacity(self, buf));
+
+        return @ptrCast([*]u8, @alignCast(@alignOf(u8), ptr))[0..len];
+    }
+
+    pub const NewDirectByteBufferError = error{Unknown};
+
+    pub fn newDirectByteBuffer(self: *Self, ptr: *anyopaque, len: usize) NewDirectByteBufferError!jobject {
+        var maybe_obj = self.interface.NewDirectByteBuffer(self, ptr, @bitCast(jlong, len));
+        return if (maybe_obj) |obj|
+            obj
+        else
+            error.Unknown;
+    }
 };
 
 pub const JavaVM = extern struct {
@@ -1346,5 +1365,21 @@ pub const JavaVM = extern struct {
         var env: *JNIEnv = undefined;
         try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*anyopaque, &env), @bitCast(jint, version)));
         return env;
+    }
+
+    pub fn attachCurrentThreadAsDaemon(self: *Self) JNIFailureError!*JNIEnv {
+        var env: *JNIEnv = undefined;
+        try handleFailureError(self.interface.AttachCurrentThreadAsDaemon(self, @ptrCast([*c]?*anyopaque, &env), null));
+        return env;
+    }
+
+    pub fn attachCurrentThread(self: *Self) JNIFailureError!*JNIEnv {
+        var env: *JNIEnv = undefined;
+        try handleFailureError(self.interface.AttachCurrentThread(self, @ptrCast([*c]?*anyopaque, &env), null));
+        return env;
+    }
+
+    pub fn detachCurrentThread(self: *Self) JNIFailureError!void {
+        try handleFailureError(self.interface.DetachCurrentThread(self));
     }
 };
