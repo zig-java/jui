@@ -1288,6 +1288,12 @@ pub const JNIEnv = extern struct {
         self.interface.ReleaseStringUTFChars(self, string, chars);
     }
 
+    pub fn getJavaVM(self: *Self) JNIFailureError!*JavaVM {
+        var vm: *JavaVM = undefined;
+        try handleFailureError(self.interface.GetJavaVM(self, @ptrCast([*c][*c]JavaVM, &vm)));
+        return vm;
+    }
+
     pub const GetStringRegionError = error{StringIndexOutOfBoundsException};
 
     /// Copies len number of Unicode characters beginning at offset start to the given buffer buf
