@@ -119,17 +119,15 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
                 err_buf.writer().writeByte(0) catch unreachable;
 
                 env.throwGeneric(@ptrCast([*c]const u8, err_buf.items)) catch unreachable;
-
-                // Even though an exception technically kills execution we
-                // must still return something; just return a zeroed payload
-                return std.mem.zeroes(se.payload);
             } else {
                 var buf: [512]u8 = undefined;
                 var msg = std.fmt.bufPrintZ(&buf, "{s}", .{@errorName(err)}) catch unreachable;
                 env.throwGeneric(msg) catch unreachable;
-
-                return std.mem.zeroes(se.payload);
             }
+
+            // Even though an exception technically kills execution we
+            // must still return something; just return undefined
+            return undefined;
         };
     } else {
         return @call(.{}, function, args);
