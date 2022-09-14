@@ -13,7 +13,7 @@ const is_stage2 = @hasDecl(builtin, "zig_backend") and builtin.zig_backend != .s
 pub const va_list = switch (builtin.target.cpu.arch) {
     .aarch64 => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
-        .ios, .macosx, .tvos, .watchos => [*c]u8,
+        .ios, .macos, .tvos, .watchos => [*c]u8,
         else => *extern struct {
             __stack: *anyopaque,
             __gr_top: *anyopaque,
@@ -24,7 +24,7 @@ pub const va_list = switch (builtin.target.cpu.arch) {
     },
     .sparc, .wasm32, .wasm64 => *anyopaque,
     .powerpc => switch (builtin.target.os.tag) {
-        .ios, .macosx, .tvos, .watchos, .aix => [*c]u8,
+        .ios, .macos, .tvos, .watchos, .aix => [*c]u8,
         else => *extern struct {
             gpr: u8,
             fpr: u8,
