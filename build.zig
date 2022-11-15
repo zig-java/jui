@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -15,6 +16,9 @@ pub fn build(b: *std.build.Builder) void {
     {
         const lib = b.addSharedLibrary("jni_example", "test/demo.zig", .unversioned);
 
+        if (@hasField(std.build.LibExeObjStep, "use_stage1"))
+            lib.use_stage1 = true;
+
         lib.addPackagePath("jui", "src/jui.zig");
 
         lib.setTarget(target);
@@ -28,14 +32,19 @@ pub fn build(b: *std.build.Builder) void {
 
         const main_tests = b.addTest("src/jui.zig");
         main_tests.setBuildMode(mode);
-        
+
+        if (@hasField(std.build.LibExeObjStep, "use_stage1"))
+            main_tests.use_stage1 = true;
+
         if (@hasDecl(@TypeOf(main_tests.*), "addLibraryPath")) {
+            main_tests.addLibraryPath(b.pathJoin(&.{ java_home, "/lib" }));
             main_tests.addLibraryPath(b.pathJoin(&.{ java_home, "/lib/server" }));
         } else {
             // Deprecated on zig 0.10
+            main_tests.addLibPath(b.pathJoin(&.{ java_home, "/lib" }));
             main_tests.addLibPath(b.pathJoin(&.{ java_home, "/lib/server" }));
         }
-        
+
         main_tests.linkSystemLibrary("jvm");
         main_tests.linkLibC();
         main_tests.target.abi = .gnu;
@@ -43,9 +52,9 @@ pub fn build(b: *std.build.Builder) void {
         var test_step = b.step("test", "Run library tests");
         test_step.dependOn(&main_tests.step);
 
-        const argv: []const []const u8 = &.{ b.pathJoin(&.{ java_home, "/bin/javac" }), "test/src/com/jui/TypesTest.java" };
+        const argv: []const []const u8 = &.{ b.pathJoin(&.{ java_home, "/bin/javac" ++ if (builtin.os.tag == .windows) ".exe" else "" }), "test/src/com/jui/TypesTest.java" };
         _ = b.execFromStep(argv, test_step) catch |err| {
-            std.debug.panic("Fail compiling java files {}", .{err});
+            std.debug.panic("Failed to compile Java test files: {}", .{err});
         };
     }
 }

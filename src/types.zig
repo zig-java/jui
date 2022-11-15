@@ -39,7 +39,7 @@ pub const va_list = switch (builtin.target.cpu.arch) {
         __overflow_arg_area: *anyopaque,
         __reg_save_area: *anyopaque,
     },
-    .i386 => [*c]u8,
+    if (@hasField(std.Target.Cpu.Arch, "i386")) .i386 else .x86 => [*c]u8,
     .x86_64 => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
         else => *extern struct {
