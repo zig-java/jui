@@ -28,7 +28,14 @@ pub fn build(b: *std.build.Builder) void {
 
         const main_tests = b.addTest("src/jui.zig");
         main_tests.setBuildMode(mode);
-        main_tests.addLibraryPath(b.pathJoin(&.{ java_home, "/lib/server" }));
+        
+        if (@hasDecl(@TypeOf(main_tests.*), "addLibraryPath")) {
+            main_tests.addLibraryPath(b.pathJoin(&.{ java_home, "/lib/server" }));
+        } else {
+            // Deprecated on zig 0.10
+            main_tests.addLibPath(b.pathJoin(&.{ java_home, "/lib/server" }));
+        }
+        
         main_tests.linkSystemLibrary("jvm");
         main_tests.linkLibC();
         main_tests.target.abi = .gnu;

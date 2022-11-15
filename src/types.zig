@@ -2134,7 +2134,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "booleanValue", "Z");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.boolean, obj, fieldId);
+        var value = env.getField(.boolean, obj, fieldId);
         try testing.expectEqual(@intCast(jboolean, 1), value);
     }
 
@@ -2150,7 +2150,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "byteValue", "B");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.byte, obj, fieldId);
+        var value = env.getField(.byte, obj, fieldId);
         try testing.expectEqual(@intCast(jbyte, 1), value);
     }
 
@@ -2166,7 +2166,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "charValue", "C");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.char, obj, fieldId);
+        var value = env.getField(.char, obj, fieldId);
         try testing.expectEqual(@intCast(jchar, 1), value);
     }
 
@@ -2182,7 +2182,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "shortValue", "S");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.short, obj, fieldId);
+        var value = env.getField(.short, obj, fieldId);
         try testing.expectEqual(@intCast(jshort, 1), value);
     }
 
@@ -2198,7 +2198,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "intValue", "I");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.int, obj, fieldId);
+        var value = env.getField(.int, obj, fieldId);
         try testing.expectEqual(@intCast(jint, 1), value);
     }
 
@@ -2214,7 +2214,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "longValue", "J");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.long, obj, fieldId);
+        var value = env.getField(.long, obj, fieldId);
         try testing.expectEqual(@intCast(jlong, 1), value);
     }
 
@@ -2230,8 +2230,8 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "floatValue", "F");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.float, obj, fieldId);
-        try testing.expectEqual(@intCast(jfloat, 1.0), value);
+        var value = env.getField(.float, obj, fieldId);
+        try testing.expectEqual(@as(jfloat, 1.0), value);
     }
 
     // Double constructor
@@ -2246,8 +2246,8 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "doubleValue", "D");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.double, obj, fieldId);
-        try testing.expectEqual(@intCast(jdouble, 1.0), value);
+        var value = env.getField(.double, obj, fieldId);
+        try testing.expectEqual(@as(jdouble, 1.0), value);
     }
 
     // Object constructor
@@ -2255,7 +2255,7 @@ test "newObject" {
         var ctor = try env.getMethodId(testClass, "<init>", "(Ljava/lang/Object;)V");
         try testing.expect(ctor != null);
 
-        var arg = env.allocObject(testClass);
+        var arg = try env.allocObject(testClass);
         try testing.expect(arg != null);
         defer env.deleteReference(.local, arg);
 
@@ -2266,7 +2266,7 @@ test "newObject" {
         var fieldId = try env.getFieldId(testClass, "objectValue", "Ljava/lang/Object;");
         try testing.expect(fieldId != null);
 
-        var value = try env.getField(.object, obj, fieldId);
+        var value = env.getField(.object, obj, fieldId);
         try testing.expect(value != null);
         defer env.deleteReference(.local, value);
 
