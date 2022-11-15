@@ -1,11 +1,21 @@
 package com.jui;
 
+import java.nio.ByteOrder;
+
 public class TypesTest {
 
-    public interface Interface {}
+    public interface Interface {
+    }
 
     public static abstract class Abstract {
-        public Abstract() {}
+        public Abstract() {
+        }
+    }
+
+    public static final class SubClass extends Abstract {
+        public SubClass() {
+            super();
+        }
     }
 
     public boolean booleanValue;
@@ -164,7 +174,35 @@ public class TypesTest {
         return staticObjectValue;
     }
 
-    public void Fail() throws Exception {
+    public void fail() throws Exception {
         throw new Exception("FAILED FROM JAVA");
+    }
+
+    public static java.nio.ByteBuffer getDirectBuffer() {
+        final int len = 32;
+        var buffer = java.nio.ByteBuffer.allocateDirect(len).order(ByteOrder.nativeOrder());
+        for (byte i = 0; i < len; i++) {
+            buffer.put(i);
+        }
+
+        return buffer;
+    }
+
+    public static boolean checkReversedBuffer(java.nio.ByteBuffer buffer) {
+        if (buffer.capacity() != 32)
+            return false;
+        buffer.position(0);
+        byte value = 32;
+        while (true) {
+            var read = buffer.get();
+            value -= 1;
+
+            if (read != value)
+                return false;
+            if (value == 0)
+                break;
+        }
+
+        return true;
     }
 }

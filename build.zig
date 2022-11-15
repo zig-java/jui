@@ -28,7 +28,7 @@ pub fn build(b: *std.build.Builder) void {
 
         const main_tests = b.addTest("src/jui.zig");
         main_tests.setBuildMode(mode);
-        main_tests.addLibraryPath(b.pathJoin(&.{ java_home,"/lib/server"}));
+        main_tests.addLibraryPath(b.pathJoin(&.{ java_home, "/lib/server" }));
         main_tests.linkSystemLibrary("jvm");
         main_tests.linkLibC();
         main_tests.target.abi = .gnu;
@@ -36,7 +36,7 @@ pub fn build(b: *std.build.Builder) void {
         var test_step = b.step("test", "Run library tests");
         test_step.dependOn(&main_tests.step);
 
-        const argv: []const []const u8 = &.{ b.pathJoin(&.{ java_home,"/bin/javac"}), "test/src/com/jui/TypesTest.java" };
+        const argv: []const []const u8 = &.{ b.pathJoin(&.{ java_home, "/bin/javac" }), "test/src/com/jui/TypesTest.java" };
         _ = b.execFromStep(argv, test_step) catch |err| {
             std.debug.panic("Fail compiling java files {}", .{err});
         };
