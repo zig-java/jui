@@ -1666,13 +1666,13 @@ pub const JavaVM = extern struct {
 
     interface: *const JNIInvokeInterface,
 
-    extern fn JNI_CreateJavaVM(pvm: **JavaVM, penv: **JNIEnv, args: *anyopaque) jint;
-    extern fn JNI_GetCreatedJavaVMs([*c][*c]JavaVM, jsize, [*c]jsize) jint;
+    extern "jvm" fn JNI_CreateJavaVM(**JavaVM, **JNIEnv, *anyopaque) callconv(JNICALL) jint;
+    extern "jvm" fn JNI_GetCreatedJavaVMs(**JavaVM, jsize, *jsize) callconv(JNICALL) jint;
 
     pub fn getCreatedJavaVMs(buffer: []*JavaVM) JNIFailureError![]*JavaVM {
         var size: jsize = undefined;
         try handleFailureError(JNI_GetCreatedJavaVMs(
-            @ptrCast([*c][*c]JavaVM, buffer.ptr),
+            @ptrCast(**JavaVM, buffer.ptr),
             @intCast(jsize, buffer.len),
             &size,
         ));
