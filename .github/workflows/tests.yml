@@ -13,14 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         java: [ '11', '17' ]
-        os: [ 'ubuntu-latest', 'macos-latest', 'windows-latest' ]
-        include:
-          - os: windows-latest
-            crlf: fix        
+        os: [ 'ubuntu-latest', 'macos-latest', 'windows-latest' ]    
     name: Java ${{ matrix.Java }} (${{ matrix.os }}) sample
     steps:
       - name: Force Line Endings for Windows
-        if: ${{ matrix.crlf }}
+        if: ${{ matrix.os == 'windows-latest' }}
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
@@ -38,6 +35,12 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ matrix.java }}
+
+      - name: Install DyLib
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: |
+          ln -s $JAVA_HOME/lib/server/libjvm.dylib /usr/local/lib/libjvm.dylib
+          otool -L /usr/local/lib/libjvm.dylib
 
       - name: Run Tests
         run: |
