@@ -41,7 +41,11 @@ pub fn build(b: *std.build.Builder) void {
 
         main_tests.linkSystemLibrary("jvm");
         main_tests.linkLibC();
-        main_tests.target.abi = .gnu;
+
+        // TODO: Depending on the JVM available to the distro:
+        if (builtin.os.tag == .linux) {
+            main_tests.target.abi = .gnu;
+        }
 
         if (builtin.os.tag == .windows) {
 
