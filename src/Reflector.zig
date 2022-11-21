@@ -47,7 +47,7 @@ pub const String = struct {
     /// Tells the JVM that the string you've obtained is no longer being used
     pub fn release(self: Self) void {
         switch (self.chars) {
-            .utf8 => |buf| self.reflector.env.releaseStringUTFChars(self.string, buf),
+            .utf8 => |buf| self.reflector.env.releaseStringUTFChars(self.string, @ptrCast([*]const u8, buf)),
             .unicode => |buf| self.reflector.env.releaseStringChars(self.string, @ptrCast([*]const u16, buf)),
         }
     }
@@ -255,9 +255,6 @@ pub fn Constructor(descriptor: descriptors.MethodDescriptor) type {
         method_id: types.jmethodID,
 
         pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) !Object {
-            _ = self;
-            _ = args;
-
             var processed_args: [args.len]types.jvalue = undefined;
             comptime var index: usize = 0;
             inline while (index < args.len) : (index += 1) {
@@ -282,9 +279,6 @@ pub fn Method(descriptor: descriptors.MethodDescriptor) type {
         method_id: types.jmethodID,
 
         pub fn call(self: Self, object: Object, args: ArgsFromDescriptor(&descriptor)) !MapDescriptorType(descriptor.return_type) {
-            _ = self;
-            _ = args;
-
             var processed_args: [args.len]types.jvalue = undefined;
             comptime var index: usize = 0;
             inline while (index < args.len) : (index += 1) {
@@ -311,9 +305,6 @@ pub fn StaticMethod(descriptor: descriptors.MethodDescriptor) type {
         method_id: types.jmethodID,
 
         pub fn call(self: Self, args: ArgsFromDescriptor(&descriptor)) !MapDescriptorType(descriptor.return_type) {
-            _ = self;
-            _ = args;
-
             var processed_args: [args.len]types.jvalue = undefined;
             comptime var index: usize = 0;
             inline while (index < args.len) : (index += 1) {

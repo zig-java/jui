@@ -3,8 +3,8 @@ const std = @import("std");
 pub const MethodDescriptor = struct {
     const Self = @This();
 
-    parameters: []const Descriptor,
-    return_type: *const Descriptor,
+    parameters: []*Descriptor,
+    return_type: *Descriptor,
 
     pub fn stringify(self: Self, writer: anytype) anyerror!void {
         try writer.writeByte('(');
@@ -13,8 +13,8 @@ pub const MethodDescriptor = struct {
         try self.return_type.stringify(writer);
     }
 
-    pub fn deinit(self: *Self, allocator: *std.mem.Allocator) void {
-        for (self.parameters) |*param| param.*.deinit(allocator);
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        for (self.parameters) |param| param.deinit(allocator);
         allocator.free(self.parameters);
         self.return_type.deinit(allocator);
     }
@@ -41,7 +41,7 @@ pub const Descriptor = union(enum) {
     boolean: void,
 
     object: []const u8,
-    array: *const Descriptor,
+    array: *Descriptor,
     method: MethodDescriptor,
 
     /// Only valid for method `return_type`s
@@ -113,7 +113,7 @@ pub const Descriptor = union(enum) {
         try self.humanStringify(buf.writer());
     }
 
-    pub fn deinit(self: *Self, allocator: *std.mem.Allocator) void {
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .object => |*o| allocator.free(o.*),
             .array => |*a| a.*.deinit(allocator),
@@ -125,13 +125,13 @@ pub const Descriptor = union(enum) {
     }
 };
 
-fn c(allocator: *std.mem.Allocator, d: Descriptor) !*Descriptor {
+fn c(allocator: std.mem.Allocator, d: Descriptor) !*Descriptor {
     var x = try allocator.create(Descriptor);
     x.* = d;
     return x;
 }
 
-fn parse_(allocator: *std.mem.Allocator, reader: anytype) anyerror!?*Descriptor {
+fn parse_(allocator: std.mem.Allocator, reader: anytype) anyerror!?*Descriptor {
     var kind = try reader.readByte();
     switch (kind) {
         'B' => return try c(allocator, .byte),
@@ -178,11 +178,11 @@ fn parse_(allocator: *std.mem.Allocator, reader: anytype) anyerror!?*Descriptor 
     }
 }
 
-pub fn parse(allocator: *std.mem.Allocator, reader: anytype) anyerror!*Descriptor {
+pub fn parse(allocator: std.mem.Allocator, reader: anytype) anyerror!*Descriptor {
     return (try parse_(allocator, reader)).?;
 }
 
-pub fn parseString(allocator: *std.mem.Allocator, string: []const u8) !*Descriptor {
+pub fn parseString(allocator: std.mem.Allocator, string: []const u8) !*Descriptor {
     var fbs = std.io.fixedBufferStream(string);
     return parse(allocator, fbs.reader());
 }
@@ -219,7 +219,7 @@ test "Descriptors: Write/parse method that returns an object and accepts an inte
 
     var object = Descriptor{ .object = "java/lang/Object" };
 
-    var desc = Descriptor{ .method = .{ .parameters = &.{ &int, &double, &thread }, .return_type = &object } };
+    var desc = Descriptor{ .method = .{ .parameters = &[_]*Descriptor{ &int, &double, &thread }, .return_type = &object } };
 
     var out_buf = std.ArrayList(u8).init(std.testing.allocator);
     defer out_buf.deinit();

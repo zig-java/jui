@@ -5,7 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 // builtin.zig_backend decl exists
-// This code must be removed once the 0.10 was released
+// This code must be removed once the 0.9.1 support is not necessary.
 const is_stage2 = @hasDecl(builtin, "zig_backend") and builtin.zig_backend != .stage1;
 
 /// Stolen from https://github.com/ziglang/zig/pull/6272
@@ -39,7 +39,7 @@ pub const va_list = switch (builtin.target.cpu.arch) {
         __overflow_arg_area: *anyopaque,
         __reg_save_area: *anyopaque,
     },
-    .i386 => [*c]u8,
+    if (@hasField(std.Target.Cpu.Arch, "i386")) .i386 else .x86 => [*c]u8,
     .x86_64 => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
         else => *extern struct {
@@ -139,6 +139,21 @@ pub fn MapNativeType(comptime native_type: NativeType) type {
         .float => jfloat,
         .double => jdouble,
         .@"void" => void,
+    };
+}
+
+pub fn MapArrayType(comptime native_type: NativeType) type {
+    return switch (native_type) {
+        .boolean => jbooleanArray,
+        .byte => jbyteArray,
+        .char => jcharArray,
+        .short => jshortArray,
+        .int => jintArray,
+        .long => jlongArray,
+        .float => jfloatArray,
+        .double => jdoubleArray,
+        .object => jobjectArray,
+        .@"void" => @compileError("Array cannot be of type 'void'"),
     };
 }
 
@@ -797,6 +812,12 @@ pub const JNIEnv = extern struct {
         return @bitCast(JNIVersion, version);
     }
 
+    pub fn getJavaVM(self: *Self) JNIFailureError!*JavaVM {
+        var vm: *JavaVM = undefined;
+        try handleFailureError(self.interface.GetJavaVM(self, @ptrCast([*c][*c]JavaVM, &vm)));
+        return vm;
+    }
+
     // Class Operations
 
     pub const DefineClassError = error{
@@ -846,8 +867,8 @@ pub const JNIEnv = extern struct {
     }
 
     /// Determines whether an object of class1 can be safely cast to class2
-    pub fn canBeCastTo(self: *Self, class1: jclass, class2: jclass) bool {
-        return self.interface.IsAssignableFrom(class1, class2) == 1;
+    pub fn isAssignableFrom(self: *Self, class1: jclass, class2: jclass) bool {
+        return self.interface.IsAssignableFrom(self, class1, class2) == 1;
     }
 
     // Module Operations
@@ -896,6 +917,7 @@ pub const JNIEnv = extern struct {
     /// Raises a fatal error and does not expect the VM to recover
     pub fn fatalError(self: *Self, message: [*:0]const u8) noreturn {
         self.interface.FatalError(self, message);
+        unreachable;
     }
 
     /// Determines if an exception is being thrown
@@ -1162,7 +1184,7 @@ pub const JNIEnv = extern struct {
     }
 
     /// Sets the value of a field
-    pub fn setStaticField(self: *Self, comptime native_type: NativeType, class: jclass, field_id: jobject, value: MapNativeType(native_type)) void {
+    pub fn setStaticField(self: *Self, comptime native_type: NativeType, class: jclass, field_id: jfieldID, value: MapNativeType(native_type)) void {
         (switch (native_type) {
             .object => self.interface.SetStaticObjectField,
             .boolean => self.interface.SetStaticBooleanField,
@@ -1284,25 +1306,15 @@ pub const JNIEnv = extern struct {
     }
 
     /// Informs the VM that the native code no longer needs access to chars
-    pub fn releaseStringUTFChars(self: *Self, string: jstring, chars: [*:0]const u8) void {
+    pub fn releaseStringUTFChars(self: *Self, string: jstring, chars: [*]const u8) void {
         self.interface.ReleaseStringUTFChars(self, string, chars);
-    }
-
-    pub fn getJavaVM(self: *Self) JNIFailureError!*JavaVM {
-        var vm: *JavaVM = undefined;
-        try handleFailureError(self.interface.GetJavaVM(self, @ptrCast([*c][*c]JavaVM, &vm)));
-        return vm;
     }
 
     pub const GetStringRegionError = error{StringIndexOutOfBoundsException};
 
     /// Copies len number of Unicode characters beginning at offset start to the given buffer buf
     pub fn getStringRegion(self: *Self, string: jstring, start: jsize, len: jsize, buf: []u16) GetStringRegionError!void {
-        var string_length = self.getStringLength(string);
-        std.debug.assert(start >= 0 and start < string_length);
-        std.debug.assert(len >= 0 and start + len < string_length);
-
-        self.interface.GetStringRegion(self, string, start, len, buf);
+        self.interface.GetStringRegion(self, string, start, len, buf.ptr);
         if (self.hasPendingException())
             return error.StringIndexOutOfBoundsException;
     }
@@ -1311,11 +1323,7 @@ pub const JNIEnv = extern struct {
 
     /// Translates len number of Unicode characters beginning at offset start into modified UTF-8 encoding and place the result in the given buffer buf
     pub fn getStringUTFRegion(self: *Self, string: jstring, start: jsize, len: jsize, buf: []u8) GetStringUTFRegionError!void {
-        var string_length = self.getStringUTFLength(string);
-        std.debug.assert(start >= 0 and start < string_length);
-        std.debug.assert(len >= 0 and start + len < string_length);
-
-        self.interface.GetStringUTFRegion(self, string, start, len, buf);
+        self.interface.GetStringUTFRegion(self, string, start, len, buf.ptr);
         if (self.hasPendingException())
             return error.StringIndexOutOfBoundsException;
     }
@@ -1360,6 +1368,297 @@ pub const JNIEnv = extern struct {
         else
             error.Unknown;
     }
+
+    // Arrays
+
+    pub fn getArrayLength(self: *Self, array: jarray) jsize {
+        return self.interface.GetArrayLength(self, array);
+    }
+
+    pub const NewObjectArrayError = error{
+        /// if the system runs out of memory
+        OutOfMemoryError,
+
+        /// if the array cannot be constructed
+        Unknown,
+    };
+
+    /// Constructs a new array holding objects in class elementClass. All elements are initially set to initial_element.
+    pub fn newObjectArray(self: *Self, length: jsize, class: jclass, initial_element: jobject) NewObjectArrayError!jobjectArray {
+        var maybe_array = self.interface.NewObjectArray(self, length, class, initial_element);
+        return if (maybe_array) |array|
+            array
+        else if (self.hasPendingException())
+            self.handleKnownError(NewObjectArrayError)
+        else
+            error.Unknown;
+    }
+
+    pub const GetObjectArrayElementError = error{
+        /// if index does not specify a valid index in the array
+        ArrayIndexOutOfBoundsException,
+    };
+
+    /// Returns an element of an Object array.
+    pub fn getObjectArrayElement(
+        self: *Self,
+        array: jobjectArray,
+        index: jsize,
+    ) GetObjectArrayElementError!jobject {
+        var maybe_obj = self.interface.GetObjectArrayElement(self, array, index);
+        return if (maybe_obj) |obj|
+            obj
+        else
+            self.handleKnownError(GetObjectArrayElementError);
+    }
+
+    pub const SetObjectArrayElementError = error{
+        /// if index does not specify a valid index in the array
+        ArrayIndexOutOfBoundsException,
+
+        /// if the class of value is not a subclass of the element class of the array
+        ArrayStoreException,
+    };
+
+    /// Returns an element of an Object array.
+    pub fn setObjectArrayElement(
+        self: *Self,
+        array: jobjectArray,
+        index: jsize,
+        value: jobject,
+    ) SetObjectArrayElementError!void {
+        self.interface.SetObjectArrayElement(self, array, index, value);
+        return if (self.hasPendingException())
+            self.handleKnownError(GetObjectArrayElementError);
+    }
+
+    pub const NewPrimitiveArrayError = error{
+        /// if the array cannot be constructed
+        Unknown,
+    };
+
+    /// Constructs a new primitive array object.
+    pub fn newPrimitiveArray(
+        self: *Self,
+        comptime native_type: NativeType,
+        size: jsize,
+    ) NewPrimitiveArrayError!MapArrayType(native_type) {
+        return (switch (native_type) {
+            .boolean => self.interface.NewBooleanArray,
+            .byte => self.interface.NewByteArray,
+            .char => self.interface.NewCharArray,
+            .short => self.interface.NewShortArray,
+            .int => self.interface.NewIntArray,
+            .long => self.interface.NewLongArray,
+            .float => self.interface.NewFloatArray,
+            .double => self.interface.NewDoubleArray,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, size) orelse
+            error.Unknown;
+    }
+
+    pub const GetPrimitiveArrayElementsError = error{
+        Unknown,
+    };
+    pub fn GetPrimitiveArrayElementsReturn(comptime native_type: NativeType) type {
+        return struct { elements: [*]MapNativeType(native_type), is_copy: bool };
+    }
+
+    /// Returns the body of the primitive array.
+    /// The result is valid until releasePrimitiveArrayElements() function is called.
+    /// Since the returned array may be a copy of the Java array,
+    /// changes made to the returned array will not necessarily be reflected in the original array
+    /// until releasePrimitiveArrayElements() is called.
+    pub fn getPrimitiveArrayElements(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+    ) GetPrimitiveArrayElementsError!GetPrimitiveArrayElementsReturn(native_type) {
+        var is_copy: jboolean = 0;
+        var maybe_elements = (switch (native_type) {
+            .boolean => self.interface.GetBooleanArrayElements,
+            .byte => self.interface.GetByteArrayElements,
+            .char => self.interface.GetCharArrayElements,
+            .short => self.interface.GetShortArrayElements,
+            .int => self.interface.GetIntArrayElements,
+            .long => self.interface.GetLongArrayElements,
+            .float => self.interface.GetFloatArrayElements,
+            .double => self.interface.GetDoubleArrayElements,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, &is_copy);
+
+        return if (maybe_elements) |elements|
+            GetPrimitiveArrayElementsReturn(native_type){ .elements = elements, .is_copy = is_copy == 1 }
+        else
+            error.Unknown;
+    }
+
+    /// The mode argument provides information on how the array buffer should be released.
+    /// Mode has no effect if elems is not a copy of the elements in array.
+    pub const ReleasePrimitiveArrayElementsMode = enum(jint) {
+        /// Copy back the content and free the elems buffer
+        default = 0,
+
+        /// Copy back the content but do not free the elems buffer
+        commit,
+
+        /// Free the buffer without copying back the possible changes
+        abort,
+    };
+
+    /// Informs the VM that the native code no longer needs access to elems.
+    /// The elems argument is a pointer derived from array using getPrimitiveArrayElements() function.
+    /// If necessary, this function copies back all changes made to elems to the original array.
+    pub fn releasePrimitiveArrayElements(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+        elements: [*]MapNativeType(native_type),
+        mode: ReleasePrimitiveArrayElementsMode,
+    ) void {
+        (switch (native_type) {
+            .boolean => self.interface.ReleaseBooleanArrayElements,
+            .byte => self.interface.ReleaseByteArrayElements,
+            .char => self.interface.ReleaseCharArrayElements,
+            .short => self.interface.ReleaseShortArrayElements,
+            .int => self.interface.ReleaseIntArrayElements,
+            .long => self.interface.ReleaseLongArrayElements,
+            .float => self.interface.ReleaseFloatArrayElements,
+            .double => self.interface.ReleaseDoubleArrayElements,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, elements, @enumToInt(mode));
+    }
+
+    pub const GetPrimitiveArrayRegionError = error{
+        /// if one of the indexes in the region is not valid
+        ArrayIndexOutOfBoundsException,
+    };
+
+    /// Copies a region of a primitive array into a buffer.
+    pub fn getPrimitiveArrayRegion(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+        start: jsize,
+        length: jsize,
+        buffer: [*]MapNativeType(native_type),
+    ) GetPrimitiveArrayRegionError!void {
+        (switch (native_type) {
+            .boolean => self.interface.GetBooleanArrayRegion,
+            .byte => self.interface.GetByteArrayRegion,
+            .char => self.interface.GetCharArrayRegion,
+            .short => self.interface.GetShortArrayRegion,
+            .int => self.interface.GetIntArrayRegion,
+            .long => self.interface.GetLongArrayRegion,
+            .float => self.interface.GetFloatArrayRegion,
+            .double => self.interface.GetDoubleArrayRegion,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, start, length, buffer);
+        return if (self.hasPendingException())
+            self.handleKnownError(GetPrimitiveArrayRegionError);
+    }
+
+    pub const SetPrimitiveArrayRegionError = error{
+        /// if one of the indexes in the region is not valid
+        ArrayIndexOutOfBoundsException,
+    };
+
+    /// Copies back a region of a primitive array from a buffer.
+    pub fn setPrimitiveArrayRegion(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+        start: jsize,
+        length: jsize,
+        buffer: [*]MapNativeType(native_type),
+    ) SetPrimitiveArrayRegionError!void {
+        (switch (native_type) {
+            .boolean => self.interface.SetBooleanArrayRegion,
+            .byte => self.interface.SetByteArrayRegion,
+            .char => self.interface.SetCharArrayRegion,
+            .short => self.interface.SetShortArrayRegion,
+            .int => self.interface.SetIntArrayRegion,
+            .long => self.interface.SetLongArrayRegion,
+            .float => self.interface.SetFloatArrayRegion,
+            .double => self.interface.SetDoubleArrayRegion,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, start, length, buffer);
+        return if (self.hasPendingException())
+            self.handleKnownError(SetPrimitiveArrayRegionError);
+    }
+
+    pub const GetPrimitiveArrayCriticalError = error{
+        /// if one of the indexes in the critical region is not valid
+        ArrayIndexOutOfBoundsException,
+        Unknown,
+    };
+    pub fn GetPrimitiveArrayCriticalReturn(comptime native_type: NativeType) type {
+        return struct { region: [*]MapNativeType(native_type), is_copy: bool };
+    }
+
+    /// If possible, the VM returns a pointer to the primitive array; otherwise, a copy is made.
+    /// However, there are significant restrictions on how these functions can be used.
+    /// After calling getPrimitiveArrayCritical,
+    /// the native code should not run for an extended period of time before it calls releasePrimitiveArrayCritical.
+    /// We must treat the code inside this pair of functions as running in a "critical region."
+    /// Inside a critical region, native code must not call other JNI functions,
+    /// or any system call that may cause the current thread to block and wait for another Java thread.
+    /// These restrictions make it more likely that the native code will obtain an uncopied version of the array,
+    /// even if the VM does not support pinning.
+    /// For example, a VM may temporarily disable garbage collection when the native code is holding a pointer
+    /// to an array obtained via getPrimitiveArrayCritical.
+    pub fn getPrimitiveArrayCritical(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+    ) GetPrimitiveArrayCriticalError!GetPrimitiveArrayCriticalReturn(native_type) {
+        var is_copy: jboolean = 0;
+        var maybe_region = (switch (native_type) {
+            else => self.interface.GetPrimitiveArrayCritical,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, &is_copy);
+
+        return if (maybe_region) |region|
+            GetPrimitiveArrayCriticalReturn(native_type){
+                .region = @ptrCast([*]MapNativeType(native_type), @alignCast(@alignOf(MapNativeType(native_type)), region)),
+                .is_copy = is_copy == 1,
+            }
+        else if (self.hasPendingException())
+            self.handleKnownError(GetPrimitiveArrayCriticalError)
+        else
+            error.Unknown;
+    }
+
+    pub fn releasePrimitiveArrayCritical(
+        self: *Self,
+        comptime native_type: NativeType,
+        array: MapArrayType(native_type),
+        elements: [*]MapNativeType(native_type),
+        mode: ReleasePrimitiveArrayElementsMode,
+    ) void {
+        (switch (native_type) {
+            else => self.interface.ReleasePrimitiveArrayCritical,
+            .object => @compileError("Only primitive types are allowed"),
+            .void => unreachable,
+        })(self, array, elements, @enumToInt(mode));
+    }
+};
+
+pub const JavaVMOption = extern struct {
+    option: [*:0]const u8,
+    extraInfo: ?*const anyopaque = null,
+};
+
+pub const JavaVMInitArgs = struct {
+    version: JNIVersion,
+    options: []const JavaVMOption,
+    ignore_unrecognized: bool,
 };
 
 pub const JavaVM = extern struct {
@@ -1367,25 +1666,1642 @@ pub const JavaVM = extern struct {
 
     interface: *const JNIInvokeInterface,
 
-    pub fn getEnv(self: *Self, version: JNIVersion) JNIFailureError!*JNIEnv {
-        var env: *JNIEnv = undefined;
-        try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*anyopaque, &env), @bitCast(jint, version)));
-        return env;
+    extern "jvm" fn JNI_CreateJavaVM(**JavaVM, **JNIEnv, *anyopaque) callconv(JNICALL) jint;
+    extern "jvm" fn JNI_GetCreatedJavaVMs(**JavaVM, jsize, *jsize) callconv(JNICALL) jint;
+
+    pub fn getCreatedJavaVMs(buffer: []*JavaVM) JNIFailureError![]*JavaVM {
+        var size: jsize = undefined;
+        try handleFailureError(JNI_GetCreatedJavaVMs(
+            @ptrCast(**JavaVM, buffer.ptr),
+            @intCast(jsize, buffer.len),
+            &size,
+        ));
+        return buffer[0..@intCast(usize, size)];
     }
 
-    pub fn attachCurrentThreadAsDaemon(self: *Self) JNIFailureError!*JNIEnv {
-        var env: *JNIEnv = undefined;
-        try handleFailureError(self.interface.AttachCurrentThreadAsDaemon(self, @ptrCast([*c]?*anyopaque, &env), null));
-        return env;
+    pub fn getCreatedJavaVM() JNIFailureError!?*JavaVM {
+        var buffer: [1]*JavaVM = undefined;
+        var result = try getCreatedJavaVMs(&buffer);
+        return if (result.len == 0)
+            null
+        else
+            result[0];
     }
 
+    pub const CreateJavaVMReturn = struct { jvm: *JavaVM, env: *JNIEnv };
+
+    pub fn createJavaVM(args: *const JavaVMInitArgs) JNIFailureError!CreateJavaVMReturn {
+        var args_: extern struct {
+            version: jint,
+            nOptions: jint,
+            options: [*c]const JavaVMOption,
+            ignoreUnrecognized: jboolean,
+        } = .{
+            .version = @bitCast(jint, args.version),
+            .nOptions = @intCast(jint, args.options.len),
+            .options = args.options.ptr,
+            .ignoreUnrecognized = if (args.ignore_unrecognized) 1 else 0,
+        };
+
+        var jvm: *JavaVM = undefined;
+        var env: *JNIEnv = undefined;
+        try handleFailureError(JNI_CreateJavaVM(
+            &jvm,
+            &env,
+            &args_,
+        ));
+        return CreateJavaVMReturn{
+            .jvm = jvm,
+            .env = env,
+        };
+    }
+
+    /// Unloads a Java VM and reclaims its resources.
+    pub fn destroyJavaVM(self: *Self) JNIFailureError!void {
+        try handleFailureError(self.interface.DestroyJavaVM(self));
+    }
+
+    /// Attaches the current thread to a Java VM. Returns a JNI interface pointer in the JNIEnv argument.
+    /// Trying to attach a thread that is already attached is a no-op.
     pub fn attachCurrentThread(self: *Self) JNIFailureError!*JNIEnv {
         var env: *JNIEnv = undefined;
         try handleFailureError(self.interface.AttachCurrentThread(self, @ptrCast([*c]?*anyopaque, &env), null));
         return env;
     }
 
+    /// Same semantics as attachCurrentThread, but the newly-created java.lang.Thread instance is a daemon.
+    /// If the thread has already been attached via either AttachCurrentThread or AttachCurrentThreadAsDaemon,
+    /// this routine simply sets the value pointed to by penv to the JNIEnv of the current thread.
+    /// In this case neither AttachCurrentThread nor this routine have any effect on the daemon status of the thread.
+    pub fn attachCurrentThreadAsDaemon(self: *Self) JNIFailureError!*JNIEnv {
+        var env: *JNIEnv = undefined;
+        try handleFailureError(self.interface.AttachCurrentThreadAsDaemon(self, @ptrCast([*c]?*anyopaque, &env), null));
+        return env;
+    }
+
+    /// Detaches the current thread from a Java VM.
+    /// All Java monitors held by this thread are released. All Java threads waiting for this thread to die are notified.
     pub fn detachCurrentThread(self: *Self) JNIFailureError!void {
         try handleFailureError(self.interface.DetachCurrentThread(self));
     }
+
+    pub fn getEnv(self: *Self, version: JNIVersion) JNIFailureError!*JNIEnv {
+        var env: *JNIEnv = undefined;
+        try handleFailureError(self.interface.GetEnv(self, @ptrCast([*c]?*anyopaque, &env), @bitCast(jint, version)));
+        return env;
+    }
 };
+
+// Tests
+
+const testing = std.testing;
+
+const getTestingJNIEnv = struct {
+    var init = std.once(createJVM);
+    var env: *JNIEnv = undefined;
+
+    fn createJVM() void {
+        const JNI_1_10 = JNIVersion{ .major = 10, .minor = 0 };
+        const args = JavaVMInitArgs{
+            .version = JNI_1_10,
+            .options = &.{
+                .{ .option = "-Djava.class.path=./test/src" },
+            },
+            .ignore_unrecognized = true,
+        };
+        var result = JavaVM.createJavaVM(&args) catch |err| {
+            std.debug.panic("Cannot create JVM {}", .{err});
+        };
+        env = result.env;
+    }
+
+    pub fn getEnv() *JNIEnv {
+        init.call();
+        return env;
+    }
+}.getEnv;
+
+test "Check created JVM" {
+    var env = getTestingJNIEnv();
+
+    var jvm = try env.getJavaVM();
+    var created_jvm = try JavaVM.getCreatedJavaVM();
+    try testing.expect(created_jvm != null);
+    try testing.expectEqual(jvm, created_jvm.?);
+}
+
+test "getClassNameOfObject" {
+    var env = getTestingJNIEnv();
+
+    var class = try env.findClass("com/jui/TypesTest");
+    try testing.expect(class != null);
+    defer env.deleteReference(.local, class);
+
+    var obj = try env.allocObject(class);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    var className = env.getClassNameOfObject(obj);
+    try testing.expect(className != null);
+    defer env.deleteReference(.local, className);
+
+    var utf = try env.getStringUTFChars(className);
+    defer env.releaseStringUTFChars(className, utf.chars);
+
+    var len = env.getStringUTFLength(className);
+    try testing.expectEqual(@as(jsize, 17), len);
+
+    try testing.expectEqualStrings("com.jui.TypesTest", utf.chars[0..@intCast(usize, len)]);
+}
+
+test "getJNIVersion" {
+    var env = getTestingJNIEnv();
+
+    const version = env.getJNIVersion();
+    try testing.expectEqual(JNIVersion{ .major = 10, .minor = 0 }, version);
+}
+
+test "defineClass" {
+    return error.SkipZigTest;
+}
+
+test "findClass" {
+    var env = getTestingJNIEnv();
+
+    var objectClass = try env.findClass("java/lang/Object");
+    try testing.expect(objectClass != null);
+    defer env.deleteReference(.local, objectClass);
+
+    if (env.findClass("no/such/Class")) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.NoClassDefFoundError);
+    }
+}
+
+test "getSuperclass" {
+    var env = getTestingJNIEnv();
+
+    var objectClass = try env.findClass("java/lang/Object");
+    try testing.expect(objectClass != null);
+    defer env.deleteReference(.local, objectClass);
+
+    try testing.expect(env.getSuperclass(objectClass) == null);
+
+    var stringClass = try env.findClass("java/lang/String");
+    try testing.expect(stringClass != null);
+    defer env.deleteReference(.local, stringClass);
+
+    var superClass = env.getSuperclass(stringClass);
+    try testing.expect(superClass != null);
+    defer env.deleteReference(.local, superClass);
+
+    try testing.expect(env.isSameObject(objectClass, superClass));
+}
+
+test "isAssignableFrom" {
+    var env = getTestingJNIEnv();
+
+    var objectClass = try env.findClass("java/lang/Object");
+    try testing.expect(objectClass != null);
+    defer env.deleteReference(.local, objectClass);
+
+    try testing.expect(env.getSuperclass(objectClass) == null);
+
+    var stringClass = try env.findClass("java/lang/String");
+    try testing.expect(stringClass != null);
+    defer env.deleteReference(.local, stringClass);
+
+    var longClass = try env.findClass("java/lang/Long");
+    try testing.expect(longClass != null);
+    defer env.deleteReference(.local, longClass);
+
+    try testing.expect(env.isAssignableFrom(stringClass, objectClass));
+    try testing.expect(!env.isAssignableFrom(stringClass, longClass));
+}
+
+test "getModule" {
+    var env = getTestingJNIEnv();
+
+    var exceptionClass = try env.findClass("java/lang/Exception");
+    try testing.expect(exceptionClass != null);
+    defer env.deleteReference(.local, exceptionClass);
+
+    var module = env.getModule(exceptionClass);
+    try testing.expect(module != null);
+    defer env.deleteReference(.local, module);
+}
+
+test "throw" {
+    var env = getTestingJNIEnv();
+
+    var exceptionClass = try env.findClass("java/lang/Exception");
+    try testing.expect(exceptionClass != null);
+    defer env.deleteReference(.local, exceptionClass);
+
+    var exception = try env.allocObject(exceptionClass);
+    try testing.expect(exception != null);
+    defer env.deleteReference(.local, exception);
+
+    try env.throw(exception);
+    defer env.clearPendingException();
+
+    try testing.expect(env.hasPendingException());
+}
+
+test "throwNew" {
+    var env = getTestingJNIEnv();
+
+    var exceptionClass = try env.findClass("java/lang/Exception");
+    try testing.expect(exceptionClass != null);
+    defer env.deleteReference(.local, exceptionClass);
+
+    try testing.expect(!env.hasPendingException());
+
+    try env.throwNew(exceptionClass, "");
+    defer env.clearPendingException();
+
+    try testing.expect(env.hasPendingException());
+}
+
+test "throwGeneric" {
+    var env = getTestingJNIEnv();
+
+    try testing.expect(!env.hasPendingException());
+
+    try env.throwGeneric("");
+    defer env.clearPendingException();
+
+    try testing.expect(env.hasPendingException());
+}
+
+test "getPendingException" {
+    var env = getTestingJNIEnv();
+
+    try testing.expect(env.getPendingException() == null);
+
+    try env.throwGeneric("");
+    defer env.clearPendingException();
+
+    var pendingException = env.getPendingException();
+    try testing.expect(pendingException != null);
+    defer env.deleteReference(.local, pendingException);
+}
+
+test "describeException" {
+    var env = getTestingJNIEnv();
+
+    try testing.expect(!env.hasPendingException());
+
+    try env.throwGeneric("DESCRIBED CORRECTLY");
+    defer env.clearPendingException();
+
+    env.describeException();
+}
+
+test "clearPendingException" {
+    var env = getTestingJNIEnv();
+
+    try testing.expect(!env.hasPendingException());
+
+    try env.throwGeneric("");
+
+    try testing.expect(env.hasPendingException());
+    env.clearPendingException();
+    try testing.expect(!env.hasPendingException());
+}
+
+test "fatalError" {
+    // TODO: Wait until Zig has support for "expectPanic"
+    if (true) return error.SkipZigTest;
+    var env = getTestingJNIEnv();
+
+    try testing.expect(!env.hasPendingException());
+
+    env.fatalError("FATAL");
+}
+
+test "hasPendingException" {
+    var env = getTestingJNIEnv();
+
+    // Exception from the java side
+    {
+        try testing.expect(!env.hasPendingException());
+
+        var testClass = try env.findClass("com/jui/TypesTest");
+        try testing.expect(testClass != null);
+        defer env.deleteReference(.local, testClass);
+
+        var methodId = try env.getMethodId(testClass, "fail", "()V");
+        try testing.expect(methodId != null);
+
+        var obj = try env.allocObject(testClass);
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        if (env.callMethod(.@"void", obj, methodId, null)) |_| {
+            try testing.expect(false);
+        } else |err| {
+            try testing.expect(err == error.Exception);
+        }
+
+        try testing.expect(env.hasPendingException());
+        env.clearPendingException();
+        try testing.expect(!env.hasPendingException());
+    }
+
+    // Exception from the JNI side
+    {
+        try testing.expect(!env.hasPendingException());
+
+        try env.throwGeneric("");
+
+        try testing.expect(env.hasPendingException());
+        env.clearPendingException();
+        try testing.expect(!env.hasPendingException());
+    }
+}
+
+test "references: newReference, deleteReference, getObjectReferenceKind, isSameObject" {
+    var env = getTestingJNIEnv();
+
+    var booleanClass = try env.findClass("java/lang/Boolean");
+    try testing.expect(booleanClass != null);
+    defer env.deleteReference(.local, booleanClass);
+
+    var obj = try env.allocObject(booleanClass);
+    defer env.deleteReference(.local, obj);
+    try testing.expect(obj != null);
+    try testing.expect(env.getObjectReferenceKind(obj) == .local);
+
+    var local_ref = try env.newReference(.local, obj);
+    defer env.deleteReference(.local, local_ref);
+    try testing.expect(local_ref != null);
+    try testing.expect(env.isSameObject(obj, local_ref));
+    try testing.expect(env.getObjectReferenceKind(local_ref) == .local);
+
+    var global_ref = try env.newReference(.global, obj);
+    defer env.deleteReference(.global, global_ref);
+    try testing.expect(global_ref != null);
+    try testing.expect(env.isSameObject(obj, global_ref));
+    try testing.expect(env.getObjectReferenceKind(global_ref) == .global);
+
+    var weak_ref = try env.newReference(.weak_global, obj);
+    defer env.deleteReference(.weak_global, weak_ref);
+    try testing.expect(weak_ref != null);
+    try testing.expect(env.isSameObject(obj, weak_ref));
+    try testing.expect(env.getObjectReferenceKind(weak_ref) == .weak_global);
+}
+
+test "pushLocalFrame, popLocalFrame and ensureLocalCapacity" {
+    var env = getTestingJNIEnv();
+
+    // Creating a new local frame
+    try env.pushLocalFrame(1);
+    try env.ensureLocalCapacity(10);
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+
+    // All references must be invalidated after this frame being droped
+    var result = env.popLocalFrame(@as(jobject, null));
+    try testing.expect(result == null);
+
+    var dead_reference = env.getObjectReferenceKind(obj);
+    try testing.expect(dead_reference == ObjectReferenceKind.invalid);
+}
+
+test "allocObject" {
+    var env = getTestingJNIEnv();
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    var interface = try env.findClass("com/jui/TypesTest$Interface");
+    try testing.expect(interface != null);
+    defer env.deleteReference(.local, interface);
+
+    if (env.allocObject(interface)) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.InstantiationException);
+    }
+
+    var abstract = try env.findClass("com/jui/TypesTest$Abstract");
+    try testing.expect(abstract != null);
+    defer env.deleteReference(.local, abstract);
+
+    if (env.allocObject(abstract)) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.InstantiationException);
+    }
+}
+
+test "newObject" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    // Default constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "()V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, null);
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+    }
+
+    // Boolean constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(Z)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jboolean, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "booleanValue", "Z");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.boolean, obj, fieldId);
+        try testing.expectEqual(@intCast(jboolean, 1), value);
+    }
+
+    // Byte constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(B)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jbyte, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "byteValue", "B");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.byte, obj, fieldId);
+        try testing.expectEqual(@intCast(jbyte, 1), value);
+    }
+
+    // Char constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(C)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jchar, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "charValue", "C");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.char, obj, fieldId);
+        try testing.expectEqual(@intCast(jchar, 1), value);
+    }
+
+    // Short constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(S)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jshort, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "shortValue", "S");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.short, obj, fieldId);
+        try testing.expectEqual(@intCast(jshort, 1), value);
+    }
+
+    // Int constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(I)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jint, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "intValue", "I");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.int, obj, fieldId);
+        try testing.expectEqual(@intCast(jint, 1), value);
+    }
+
+    // Long constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(J)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jlong, 1))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "longValue", "J");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.long, obj, fieldId);
+        try testing.expectEqual(@intCast(jlong, 1), value);
+    }
+
+    // Float constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(F)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jfloat, 1.0))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "floatValue", "F");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.float, obj, fieldId);
+        try testing.expectEqual(@as(jfloat, 1.0), value);
+    }
+
+    // Double constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(D)V");
+        try testing.expect(ctor != null);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@as(jdouble, 1.0))});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "doubleValue", "D");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.double, obj, fieldId);
+        try testing.expectEqual(@as(jdouble, 1.0), value);
+    }
+
+    // Object constructor
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(Ljava/lang/Object;)V");
+        try testing.expect(ctor != null);
+
+        var arg = try env.allocObject(testClass);
+        try testing.expect(arg != null);
+        defer env.deleteReference(.local, arg);
+
+        var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(arg)});
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        var fieldId = try env.getFieldId(testClass, "objectValue", "Ljava/lang/Object;");
+        try testing.expect(fieldId != null);
+
+        var value = env.getField(.object, obj, fieldId);
+        try testing.expect(value != null);
+        defer env.deleteReference(.local, value);
+
+        try testing.expect(env.isSameObject(arg, value));
+    }
+
+    // Abstract class
+    {
+        var abstractClass = try env.findClass("com/jui/TypesTest$Abstract");
+        try testing.expect(abstractClass != null);
+
+        var ctor = try env.getMethodId(abstractClass, "<init>", "()V");
+        try testing.expect(ctor != null);
+
+        if (env.newObject(abstractClass, ctor, null)) |_| {
+            try testing.expect(false);
+        } else |err| {
+            try testing.expect(err == error.InstantiationException);
+        }
+    }
+}
+
+test "newObject" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    var objClass = env.getObjectClass(obj);
+    try testing.expect(objClass != null);
+    defer env.deleteReference(.local, objClass);
+
+    try testing.expect(env.isSameObject(testClass, objClass));
+}
+
+test "isInstanceOf" {
+    var env = getTestingJNIEnv();
+
+    var booleanClass = try env.findClass("java/lang/Boolean");
+    try testing.expect(booleanClass != null);
+    defer env.deleteReference(.local, booleanClass);
+
+    var obj = try env.allocObject(booleanClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    try testing.expect(env.isInstanceOf(obj, booleanClass));
+
+    var longClass = try env.findClass("java/lang/Long");
+    try testing.expect(longClass != null);
+    defer env.deleteReference(.local, longClass);
+
+    try testing.expect(!env.isInstanceOf(obj, longClass));
+}
+
+test "getFieldId" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var fieldId = try env.getFieldId(testClass, "booleanValue", "Z");
+    try testing.expect(fieldId != null);
+
+    if (env.getFieldId(testClass, "not_a_valid_field", "I")) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.NoSuchFieldError);
+    }
+}
+
+test "fields: getField and setField" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    // Boolean
+    {
+        var fieldId = try env.getFieldId(testClass, "booleanValue", "Z");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.boolean, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.boolean, obj, fieldId, @as(jboolean, 1));
+
+        var v2 = env.getField(.boolean, obj, fieldId);
+        try testing.expect(v2 == 1);
+    }
+
+    // Byte
+    {
+        var fieldId = try env.getFieldId(testClass, "byteValue", "B");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.byte, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.byte, obj, fieldId, @as(jbyte, 127));
+
+        var v2 = env.getField(.byte, obj, fieldId);
+        try testing.expect(v2 == 127);
+    }
+
+    // Char
+    {
+        var fieldId = try env.getFieldId(testClass, "charValue", "C");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.char, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.char, obj, fieldId, @as(jchar, 'A'));
+
+        var v2 = env.getField(.char, obj, fieldId);
+        try testing.expect(v2 == 'A');
+    }
+
+    // Short
+    {
+        var fieldId = try env.getFieldId(testClass, "shortValue", "S");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.char, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.short, obj, fieldId, @as(jshort, 9999));
+
+        var v2 = env.getField(.short, obj, fieldId);
+        try testing.expect(v2 == 9999);
+    }
+
+    // Int
+    {
+        var fieldId = try env.getFieldId(testClass, "intValue", "I");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.int, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.int, obj, fieldId, @as(jint, 999_999));
+
+        var v2 = env.getField(.int, obj, fieldId);
+        try testing.expect(v2 == 999_999);
+    }
+
+    // Long
+    {
+        var fieldId = try env.getFieldId(testClass, "longValue", "J");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.long, obj, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setField(.long, obj, fieldId, @as(jlong, 9_999_999_999));
+
+        var v2 = env.getField(.long, obj, fieldId);
+        try testing.expect(v2 == 9_999_999_999);
+    }
+
+    // Float
+    {
+        var fieldId = try env.getFieldId(testClass, "floatValue", "F");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.float, obj, fieldId);
+        try testing.expect(v1 == 0.0);
+
+        env.setField(.float, obj, fieldId, @as(jfloat, 9.99));
+
+        var v2 = env.getField(.float, obj, fieldId);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Double
+    {
+        var fieldId = try env.getFieldId(testClass, "doubleValue", "D");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.double, obj, fieldId);
+        try testing.expect(v1 == 0.0);
+
+        env.setField(.double, obj, fieldId, @as(jdouble, 9.99));
+
+        var v2 = env.getField(.double, obj, fieldId);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Object
+    {
+        var fieldId = try env.getFieldId(testClass, "objectValue", "Ljava/lang/Object;");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getField(.object, obj, fieldId);
+        try testing.expect(v1 == null);
+
+        env.setField(.object, obj, fieldId, obj);
+
+        var v2 = env.getField(.object, obj, fieldId);
+        try testing.expect(v2 != null);
+        defer env.deleteReference(.local, v2);
+
+        try testing.expect(env.isSameObject(obj, v2));
+    }
+}
+
+test "getMethodId" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var methodId = try env.getMethodId(testClass, "getBooleanValue", "()Z");
+    try testing.expect(methodId != null);
+
+    if (env.getMethodId(testClass, "not_a_valid_method", "()Z")) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.NoSuchMethodError);
+    }
+}
+
+test "methods: callMethod and callNonVirtualMethod" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    // With arguments
+    {
+        var methodId = try env.getMethodId(testClass, "initialize", "(ZBCSIJFDLjava/lang/Object;)V");
+        try testing.expect(methodId != null);
+
+        const args = &[_]jvalue{
+            jvalue.toJValue(@as(jboolean, 1)),
+            jvalue.toJValue(@as(jbyte, 127)),
+            jvalue.toJValue(@as(jchar, 'A')),
+            jvalue.toJValue(@as(jshort, 9999)),
+            jvalue.toJValue(@as(jint, 999_999)),
+            jvalue.toJValue(@as(jlong, 9_999_999_999)),
+            jvalue.toJValue(@as(jfloat, 9.99)),
+            jvalue.toJValue(@as(jdouble, 9.99)),
+            jvalue.toJValue(obj),
+        };
+
+        try env.callMethod(.void, obj, methodId, args);
+
+        try env.callNonVirtualMethod(.void, obj, testClass, methodId, args);
+    }
+
+    // Return Boolean
+    {
+        var methodId = try env.getMethodId(testClass, "getBooleanValue", "()Z");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.boolean, obj, methodId, null);
+        try testing.expect(v1 == 1);
+
+        var v2 = try env.callNonVirtualMethod(.boolean, obj, testClass, methodId, null);
+        try testing.expect(v2 == 1);
+    }
+
+    // Return Byte
+    {
+        var methodId = try env.getMethodId(testClass, "getByteValue", "()B");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.byte, obj, methodId, null);
+        try testing.expect(v1 == 127);
+
+        var v2 = try env.callNonVirtualMethod(.byte, obj, testClass, methodId, null);
+        try testing.expect(v2 == 127);
+    }
+
+    // Return Char
+    {
+        var methodId = try env.getMethodId(testClass, "getCharValue", "()C");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.char, obj, methodId, null);
+        try testing.expect(v1 == 'A');
+
+        var v2 = try env.callNonVirtualMethod(.char, obj, testClass, methodId, null);
+        try testing.expect(v2 == 'A');
+    }
+
+    // Return Short
+    {
+        var methodId = try env.getMethodId(testClass, "getShortValue", "()S");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.short, obj, methodId, null);
+        try testing.expect(v1 == 9999);
+
+        var v2 = try env.callNonVirtualMethod(.short, obj, testClass, methodId, null);
+        try testing.expect(v2 == 9999);
+    }
+
+    // Return Integer
+    {
+        var methodId = try env.getMethodId(testClass, "getIntValue", "()I");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.int, obj, methodId, null);
+        try testing.expect(v1 == 999_999);
+
+        var v2 = try env.callNonVirtualMethod(.int, obj, testClass, methodId, null);
+        try testing.expect(v2 == 999_999);
+    }
+
+    // Return Long
+    {
+        var methodId = try env.getMethodId(testClass, "getLongValue", "()J");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.long, obj, methodId, null);
+        try testing.expect(v1 == 9_999_999_999);
+
+        var v2 = try env.callNonVirtualMethod(.long, obj, testClass, methodId, null);
+        try testing.expect(v2 == 9_999_999_999);
+    }
+
+    // Return Float
+    {
+        var methodId = try env.getMethodId(testClass, "getFloatValue", "()F");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.float, obj, methodId, null);
+        try testing.expect(v1 == 9.99);
+
+        var v2 = try env.callNonVirtualMethod(.float, obj, testClass, methodId, null);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Return Double
+    {
+        var methodId = try env.getMethodId(testClass, "getDoubleValue", "()D");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.double, obj, methodId, null);
+        try testing.expect(v1 == 9.99);
+
+        var v2 = try env.callNonVirtualMethod(.double, obj, testClass, methodId, null);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Return Object
+    {
+        var methodId = try env.getMethodId(testClass, "getObjectValue", "()Ljava/lang/Object;");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callMethod(.object, obj, methodId, null);
+        try testing.expect(v1 != null);
+        defer env.deleteReference(.local, v1);
+
+        try testing.expect(env.isSameObject(obj, v1));
+
+        var v2 = try env.callNonVirtualMethod(.object, obj, testClass, methodId, null);
+        try testing.expect(v2 != null);
+        defer env.deleteReference(.local, v2);
+
+        try testing.expect(env.isSameObject(obj, v2));
+    }
+}
+
+test "getStaticFieldId" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var fieldId = try env.getStaticFieldId(testClass, "staticBooleanValue", "Z");
+    try testing.expect(fieldId != null);
+
+    if (env.getStaticFieldId(testClass, "not_a_valid_field", "Z")) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.NoSuchFieldError);
+    }
+}
+
+test "fields: getStaticField and setStaticField" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    // Boolean
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticBooleanValue", "Z");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.boolean, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.boolean, testClass, fieldId, @as(jboolean, 1));
+
+        var v2 = env.getStaticField(.boolean, testClass, fieldId);
+        try testing.expect(v2 == 1);
+    }
+
+    // Byte
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticByteValue", "B");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.byte, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.byte, testClass, fieldId, @as(jbyte, 127));
+
+        var v2 = env.getStaticField(.byte, testClass, fieldId);
+        try testing.expect(v2 == 127);
+    }
+
+    // Char
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticCharValue", "C");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.char, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.char, testClass, fieldId, @as(jchar, 'A'));
+
+        var v2 = env.getStaticField(.char, testClass, fieldId);
+        try testing.expect(v2 == 'A');
+    }
+
+    // Short
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticShortValue", "S");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.char, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.short, testClass, fieldId, @as(jshort, 9999));
+
+        var v2 = env.getStaticField(.short, testClass, fieldId);
+        try testing.expect(v2 == 9999);
+    }
+
+    // Int
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticIntValue", "I");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.int, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.int, testClass, fieldId, @as(jint, 999_999));
+
+        var v2 = env.getStaticField(.int, testClass, fieldId);
+        try testing.expect(v2 == 999_999);
+    }
+
+    // Long
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticLongValue", "J");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.long, testClass, fieldId);
+        try testing.expect(v1 == 0);
+
+        env.setStaticField(.long, testClass, fieldId, @as(jlong, 9_999_999_999));
+
+        var v2 = env.getStaticField(.long, testClass, fieldId);
+        try testing.expect(v2 == 9_999_999_999);
+    }
+
+    // Float
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticFloatValue", "F");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.float, testClass, fieldId);
+        try testing.expect(v1 == 0.0);
+
+        env.setStaticField(.float, testClass, fieldId, @as(jfloat, 9.99));
+
+        var v2 = env.getStaticField(.float, testClass, fieldId);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Double
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticDoubleValue", "D");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.double, testClass, fieldId);
+        try testing.expect(v1 == 0.0);
+
+        env.setStaticField(.double, testClass, fieldId, @as(jdouble, 9.99));
+
+        var v2 = env.getStaticField(.double, testClass, fieldId);
+        try testing.expect(v2 == 9.99);
+    }
+
+    // Object
+    {
+        var fieldId = try env.getStaticFieldId(testClass, "staticObjectValue", "Ljava/lang/Object;");
+        try testing.expect(fieldId != null);
+
+        var v1 = env.getStaticField(.object, testClass, fieldId);
+        try testing.expect(v1 == null);
+
+        var obj = try env.allocObject(testClass);
+        try testing.expect(obj != null);
+        defer env.deleteReference(.local, obj);
+
+        env.setStaticField(.object, testClass, fieldId, obj);
+
+        var v2 = env.getStaticField(.object, testClass, fieldId);
+        try testing.expect(v2 != null);
+        defer env.deleteReference(.local, v2);
+
+        try testing.expect(env.isSameObject(obj, v2));
+    }
+}
+
+test "getStaticMethodId" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var methodId = try env.getStaticMethodId(testClass, "getStaticBooleanValue", "()Z");
+    try testing.expect(methodId != null);
+
+    if (env.getStaticMethodId(testClass, "not_a_valid_method", "()Z")) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.NoSuchMethodError);
+    }
+}
+
+test "methods: callStaticMethod" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    // With arguments
+
+    var initMethodId = try env.getStaticMethodId(testClass, "staticInitialize", "(ZBCSIJFDLjava/lang/Object;)V");
+    try testing.expect(initMethodId != null);
+
+    var obj = try env.allocObject(testClass);
+    try testing.expect(obj != null);
+    defer env.deleteReference(.local, obj);
+
+    try env.callStaticMethod(
+        .void,
+        testClass,
+        initMethodId,
+        &[_]jvalue{
+            jvalue.toJValue(@as(jboolean, 1)),
+            jvalue.toJValue(@as(jbyte, 127)),
+            jvalue.toJValue(@as(jchar, 'A')),
+            jvalue.toJValue(@as(jshort, 9999)),
+            jvalue.toJValue(@as(jint, 999_999)),
+            jvalue.toJValue(@as(jlong, 9_999_999_999)),
+            jvalue.toJValue(@as(jfloat, 9.99)),
+            jvalue.toJValue(@as(jdouble, 9.99)),
+            jvalue.toJValue(obj),
+        },
+    );
+
+    defer env.callStaticMethod(
+        .void,
+        testClass,
+        initMethodId,
+        &[_]jvalue{
+            jvalue.toJValue(@as(jboolean, 0)),
+            jvalue.toJValue(@as(jbyte, 0)),
+            jvalue.toJValue(@as(jchar, 0)),
+            jvalue.toJValue(@as(jshort, 0)),
+            jvalue.toJValue(@as(jint, 0)),
+            jvalue.toJValue(@as(jlong, 0)),
+            jvalue.toJValue(@as(jfloat, 0)),
+            jvalue.toJValue(@as(jdouble, 0)),
+            jvalue.toJValue(@as(jobject, null)),
+        },
+    ) catch unreachable;
+
+    // Return Boolean
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticBooleanValue", "()Z");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.boolean, testClass, methodId, null);
+        try testing.expect(v1 == 1);
+    }
+
+    // Return Byte
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticByteValue", "()B");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.byte, testClass, methodId, null);
+        try testing.expect(v1 == 127);
+    }
+
+    // Return Char
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticCharValue", "()C");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.char, testClass, methodId, null);
+        try testing.expect(v1 == 'A');
+    }
+
+    // Return Short
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticShortValue", "()S");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.short, testClass, methodId, null);
+        try testing.expect(v1 == 9999);
+    }
+
+    // Return Integer
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticIntValue", "()I");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.int, testClass, methodId, null);
+        try testing.expect(v1 == 999_999);
+    }
+
+    // Return Long
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticLongValue", "()J");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.long, testClass, methodId, null);
+        try testing.expect(v1 == 9_999_999_999);
+    }
+
+    // Return Float
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticFloatValue", "()F");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.float, testClass, methodId, null);
+        try testing.expect(v1 == 9.99);
+    }
+
+    // Return Double
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticDoubleValue", "()D");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.double, testClass, methodId, null);
+        try testing.expect(v1 == 9.99);
+    }
+
+    // Return Object
+    {
+        var methodId = try env.getStaticMethodId(testClass, "getStaticObjectValue", "()Ljava/lang/Object;");
+        try testing.expect(methodId != null);
+
+        var v1 = try env.callStaticMethod(.object, testClass, methodId, null);
+        try testing.expect(v1 != null);
+        defer env.deleteReference(.local, v1);
+
+        try testing.expect(env.isSameObject(obj, v1));
+    }
+}
+
+test "string unicode: newString, getStringLength, getStringChars and releaseStringChars" {
+    var env = getTestingJNIEnv();
+
+    const content = std.unicode.utf8ToUtf16LeStringLiteral("Hello utf16");
+    var str = try env.newString(content);
+    try testing.expect(str != null);
+    defer env.deleteReference(.local, str);
+
+    var len = env.getStringLength(str);
+    try testing.expectEqual(content.len, @intCast(usize, len));
+
+    var ret = try env.getStringChars(str);
+    defer env.releaseStringChars(str, ret.chars);
+
+    try testing.expectEqualSlices(u16, content, ret.chars[0..@intCast(usize, len)]);
+}
+
+test "string utf: newStringUTF, getStringUTFLength, getStringUTFChars and releaseStringUTFChars" {
+    var env = getTestingJNIEnv();
+
+    const content = "Hello utf8";
+    var str = try env.newStringUTF(content);
+    try testing.expect(str != null);
+    defer env.deleteReference(.local, str);
+
+    var len = env.getStringUTFLength(str);
+    try testing.expectEqual(content.len, @intCast(usize, len));
+
+    var ret = try env.getStringUTFChars(str);
+    defer env.releaseStringUTFChars(str, ret.chars);
+
+    try testing.expectEqualSlices(u8, content, ret.chars[0..@intCast(usize, len)]);
+}
+
+test "getStringRegion" {
+    var env = getTestingJNIEnv();
+
+    const content = std.unicode.utf8ToUtf16LeStringLiteral("ABCDEFGHIJKLMNOPQRSTUVXYZ");
+    var str = try env.newString(content);
+    try testing.expect(str != null);
+    defer env.deleteReference(.local, str);
+
+    var buff: [10]u16 = undefined;
+    try env.getStringRegion(str, 5, 10, &buff);
+
+    try testing.expectEqualSlices(u16, content[5..][0..10], &buff);
+}
+
+test "getStringUTFRegion" {
+    var env = getTestingJNIEnv();
+
+    const content = "ABCDEFGHIJKLMNOPQRSTUVXYZ";
+    var str = try env.newStringUTF(content);
+    try testing.expect(str != null);
+    defer env.deleteReference(.local, str);
+
+    var buff: [10]u8 = undefined;
+    try env.getStringUTFRegion(str, 5, 10, &buff);
+
+    try testing.expectEqualSlices(u8, content[5..][0..10], &buff);
+}
+
+test "getStringCritical" {
+    var env = getTestingJNIEnv();
+
+    const content = std.unicode.utf8ToUtf16LeStringLiteral("ABCDEFGHIJKLMNOPQRSTUVXYZ");
+    var str = try env.newString(content);
+    try testing.expect(str != null);
+    defer env.deleteReference(.local, str);
+
+    var len = env.getStringLength(str);
+    try testing.expectEqual(content.len, @intCast(usize, len));
+
+    var region = try env.getStringCritical(str);
+    defer env.releaseStringCritical(str, region.chars);
+
+    try testing.expectEqualSlices(u16, content, region.chars[0..@intCast(usize, len)]);
+}
+
+test "getDirectBufferAddress" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var getDirectBufferMethodId = try env.getStaticMethodId(testClass, "getDirectBuffer", "()Ljava/nio/ByteBuffer;");
+    try testing.expect(getDirectBufferMethodId != null);
+
+    var buffer = try env.callStaticMethod(.object, testClass, getDirectBufferMethodId, null);
+    try testing.expect(buffer != null);
+    defer env.deleteReference(.local, buffer);
+
+    var direct_buffer = env.getDirectBufferAddress(buffer);
+    try testing.expectEqual(@as(usize, 32), direct_buffer.len);
+
+    // Asserting
+    {
+        var expected_byte: u8 = 0;
+        for (direct_buffer) |byte| {
+            try testing.expectEqual(expected_byte, byte);
+            expected_byte += 1;
+        }
+    }
+
+    // Reversing and sending to be asserted on the java side
+    {
+        var value: u8 = 32;
+        for (direct_buffer) |*byte| {
+            value -= 1;
+            byte.* = value;
+        }
+
+        var checkReversedBufferMethodId = try env.getStaticMethodId(testClass, "checkReversedBuffer", "(Ljava/nio/ByteBuffer;)Z");
+        try testing.expect(checkReversedBufferMethodId != null);
+
+        var valid = try env.callStaticMethod(.boolean, testClass, checkReversedBufferMethodId, &[_]jvalue{jvalue.toJValue(buffer)});
+        try testing.expectEqual(@as(jboolean, 1), valid);
+    }
+}
+
+test "newDirectByteBuffer" {
+    var env = getTestingJNIEnv();
+
+    var direct_buffer = blk: {
+        var array: [32]u8 = undefined;
+        var value: u8 = 32;
+        for (array) |*byte| {
+            value -= 1;
+            byte.* = value;
+        }
+        break :blk array;
+    };
+
+    var buffer = try env.newDirectByteBuffer(&direct_buffer, direct_buffer.len);
+    try testing.expect(buffer != null);
+    defer env.deleteReference(.local, buffer);
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var checkReversedBufferMethodId = try env.getStaticMethodId(testClass, "checkReversedBuffer", "(Ljava/nio/ByteBuffer;)Z");
+    try testing.expect(checkReversedBufferMethodId != null);
+
+    var valid = try env.callStaticMethod(.boolean, testClass, checkReversedBufferMethodId, &[_]jvalue{jvalue.toJValue(buffer)});
+    try testing.expectEqual(@as(jboolean, 1), valid);
+}
+
+test "newObjectArray, setObjectArrayElement and getObjectArrayElement" {
+    var env = getTestingJNIEnv();
+
+    var testClass = try env.findClass("com/jui/TypesTest");
+    try testing.expect(testClass != null);
+    defer env.deleteReference(.local, testClass);
+
+    var array = try env.newObjectArray(32, testClass, null);
+    try testing.expect(array != null);
+    defer env.deleteReference(.local, array);
+
+    if (env.setObjectArrayElement(array, @intCast(jsize, -1), null)) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+    }
+
+    if (env.setObjectArrayElement(array, @intCast(jsize, 32), null)) |_| {
+        try testing.expect(false);
+    } else |err| {
+        try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+    }
+
+    {
+        var ctor = try env.getMethodId(testClass, "<init>", "(I)V");
+        try testing.expect(ctor != null);
+
+        var index: u32 = 0;
+        while (index < 32) : (index += 1) {
+            var obj = try env.newObject(testClass, ctor, &[_]jvalue{jvalue.toJValue(@intCast(jint, index))});
+            try testing.expect(obj != null);
+            defer env.deleteReference(.local, obj);
+
+            try env.setObjectArrayElement(array, @intCast(jsize, index), obj);
+        }
+    }
+
+    {
+        var fieldId = try env.getFieldId(testClass, "intValue", "I");
+        try testing.expect(fieldId != null);
+
+        var index: u32 = 0;
+        while (index < 32) : (index += 1) {
+            var obj = try env.getObjectArrayElement(array, @intCast(jint, index));
+            try testing.expect(obj != null);
+            defer env.deleteReference(.local, obj);
+
+            var value = env.getField(.int, obj, fieldId);
+            try testing.expectEqual(index, @intCast(u32, value));
+        }
+    }
+}
+
+test "newPrimitiveArray, getArrayLength, getPrimitiveArrayElements" {
+    const assertArray = struct {
+        fn cast(comptime native_type: NativeType, value: anytype) MapNativeType(native_type) {
+            const jprimitive = MapNativeType(native_type);
+
+            return switch (native_type) {
+                .boolean => if (value == 0) @as(jboolean, 0) else @as(jboolean, 1),
+                else => blk: {
+                    const is_float_ret = comptime std.meta.trait.isFloat(jprimitive);
+                    const is_float_arg = comptime std.meta.trait.isFloat(@TypeOf(value));
+
+                    break :blk if (is_float_ret and is_float_arg)
+                        @floatCast(jprimitive, value)
+                    else if (is_float_ret)
+                        @intToFloat(jprimitive, value)
+                    else if (is_float_arg)
+                        @floatToInt(jprimitive, value)
+                    else
+                        @intCast(jprimitive, value);
+                },
+            };
+        }
+
+        pub fn action(comptime native_type: NativeType) !void {
+            var env = getTestingJNIEnv();
+
+            var array = try env.newPrimitiveArray(native_type, 32);
+            try testing.expect(array != null);
+            defer env.deleteReference(.local, array);
+
+            var len = env.getArrayLength(array);
+            try testing.expectEqual(@intCast(jsize, 32), len);
+
+            // Change the array
+            {
+                var ret = try env.getPrimitiveArrayElements(native_type, array);
+                defer env.releasePrimitiveArrayElements(native_type, array, ret.elements, .default);
+
+                var elements = ret.elements[0..@intCast(usize, len)];
+                for (elements) |*element, i| {
+                    try testing.expectEqual(cast(native_type, 0), element.*);
+                    element.* = cast(native_type, i);
+                }
+            }
+
+            // Check changes
+            {
+                var ret = try env.getPrimitiveArrayElements(native_type, array);
+                defer env.releasePrimitiveArrayElements(native_type, array, ret.elements, .default);
+
+                var elements = ret.elements[0..@intCast(usize, len)];
+                for (elements) |element, i| {
+                    try testing.expectEqual(cast(native_type, i), element);
+                }
+            }
+
+            // ArrayRegion
+            {
+                var buffer: [10]MapNativeType(native_type) = undefined;
+
+                // getPrimitiveArrayRegion
+
+                if (env.getPrimitiveArrayRegion(native_type, array, -1, 10, &buffer)) |_| {
+                    try testing.expect(false);
+                } else |err| {
+                    try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+                }
+
+                if (env.getPrimitiveArrayRegion(native_type, array, 0, 200, &buffer)) |_| {
+                    try testing.expect(false);
+                } else |err| {
+                    try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+                }
+
+                try env.getPrimitiveArrayRegion(native_type, array, 5, 10, &buffer);
+
+                for (buffer) |*element, i| {
+                    try testing.expectEqual(cast(native_type, i + 5), element.*);
+                    element.* = cast(native_type, i);
+                }
+
+                // setPrimitiveArrayRegion
+
+                try env.setPrimitiveArrayRegion(native_type, array, 5, 10, &buffer);
+
+                if (env.setPrimitiveArrayRegion(native_type, array, -1, 10, &buffer)) |_| {
+                    try testing.expect(false);
+                } else |err| {
+                    try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+                }
+
+                if (env.setPrimitiveArrayRegion(native_type, array, 0, 200, &buffer)) |_| {
+                    try testing.expect(false);
+                } else |err| {
+                    try testing.expect(err == error.ArrayIndexOutOfBoundsException);
+                }
+            }
+
+            // Check changes
+            {
+                var buffer: [10]MapNativeType(native_type) = undefined;
+
+                try env.getPrimitiveArrayRegion(native_type, array, 5, 10, &buffer);
+
+                for (buffer) |element, i| {
+                    try testing.expectEqual(cast(native_type, i), element);
+                }
+            }
+
+            // Critical
+            {
+                // getPrimitiveArrayRegion
+                var critical = try env.getPrimitiveArrayCritical(native_type, array);
+                defer env.releasePrimitiveArrayCritical(native_type, array, critical.region, .default);
+
+                var elements = critical.region[0..@intCast(usize, len)];
+                for (elements) |*element, i| {
+                    element.* = cast(native_type, i + 10);
+                }
+            }
+
+            // Check changes
+            {
+                var critical = try env.getPrimitiveArrayCritical(native_type, array);
+                defer env.releasePrimitiveArrayCritical(native_type, array, critical.region, .default);
+
+                var elements = critical.region[0..@intCast(usize, len)];
+                for (elements) |element, i| {
+                    try testing.expectEqual(cast(native_type, i + 10), element);
+                }
+            }
+        }
+    }.action;
+
+    try assertArray(.boolean);
+    try assertArray(.byte);
+    try assertArray(.char);
+    try assertArray(.short);
+    try assertArray(.int);
+    try assertArray(.long);
+    try assertArray(.float);
+    try assertArray(.double);
+}

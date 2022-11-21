@@ -1,0 +1,48 @@
+name: Matrix Build
+on:
+  push: 
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: 0 9 * * *
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '11', '17' ]
+        os: [ 'ubuntu-latest', 'macos-latest', 'windows-latest' ]    
+    name: Java ${{ matrix.Java }} (${{ matrix.os }}) sample
+    steps:
+      - name: Force Line Endings for Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v1
+        with:
+          version: master
+
+      - name: Setup java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
+
+      - name: Install DyLib
+        if: ${{ matrix.os == 'macos-latest' }}
+        run: |
+          ln -s $JAVA_HOME/lib/server/libjvm.dylib /usr/local/lib/libjvm.dylib
+          otool -L /usr/local/lib/libjvm.dylib
+
+      - name: Run Tests
+        run: |
+          zig version
+          zig build test

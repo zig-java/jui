@@ -133,3 +133,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
         return @call(.{}, function, args);
     }
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
