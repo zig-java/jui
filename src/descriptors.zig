@@ -1,4 +1,5 @@
 const std = @import("std");
+const jui = @import("jui.zig");
 
 pub const MethodDescriptor = struct {
     const Self = @This();
@@ -169,7 +170,17 @@ fn parse_(allocator: std.mem.Allocator, reader: anytype) anyerror!?*Descriptor {
             var returnd = (try parse_(allocator, reader)).?;
 
             var x = try allocator.create(Descriptor);
-            x.* = .{ .method = .{ .parameters = params.toOwnedSlice(), .return_type = returnd } };
+            x.* = if (jui.is_zig_master) .{
+                .method = .{
+                    .parameters = try params.toOwnedSlice(),
+                    .return_type = returnd,
+                },
+            } else .{
+                .method = .{
+                    .parameters = params.toOwnedSlice(),
+                    .return_type = returnd,
+                },
+            };
             return x;
         },
         ')' => return null,
