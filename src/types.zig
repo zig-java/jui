@@ -3,10 +3,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-
-// builtin.zig_backend decl exists
-// This code must be removed once the 0.9.1 support is not necessary.
-const is_stage2 = @hasDecl(builtin, "zig_backend") and builtin.zig_backend != .stage1;
+const jui = @import("jui.zig");
 
 /// Stolen from https://github.com/ziglang/zig/pull/6272
 /// [1]extern struct isn't allowed, see https://github.com/ziglang/zig/issues/6535
@@ -231,7 +228,7 @@ pub const JNINativeMethod = extern struct {
 // Instead of using std.meta.FnPtr for each declaration,
 // Just duplicating all structs here, with fn(..) and *const fn
 // This way it's easier to just delete when stage1 was removed
-const JNINativeInterface = if (is_stage2)
+const JNINativeInterface = if (jui.is_stage2)
     extern struct {
         reserved0: ?*anyopaque,
         reserved1: ?*anyopaque,
@@ -711,7 +708,7 @@ else
 // Instead of using std.meta.FnPtr for each declaration,
 // Just duplicating all structs here, with fn(..) and *const fn
 // This way it's easier to just delete when stage1 was removed
-const JNIInvokeInterface = if (is_stage2)
+const JNIInvokeInterface = if (jui.is_stage2)
     extern struct {
         reserved0: ?*anyopaque,
         reserved1: ?*anyopaque,

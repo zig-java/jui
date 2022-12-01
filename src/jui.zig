@@ -5,9 +5,12 @@ pub const descriptors = @import("descriptors.zig");
 pub const Reflector = @import("Reflector.zig");
 const types = @import("types.zig");
 
-// Some break changes in zig 0.10.0-dev
-// This code must be removed once the 0.10 was released
-const is_zig_master = builtin.zig_version.major >= 0 and builtin.zig_version.minor >= 10;
+// We support Zig 0.9.1 (old stable), 0.10.0 (current stable) and 0.11.0-dev (latest master).
+// We also support both stage1 and stage2 compilers.
+// This can be simplified once we drop support for Zig 0.9.1 and stage1:
+pub const is_zig_9_1 = builtin.zig_version.major >= 0 and builtin.zig_version.minor == 9;
+pub const is_zig_master = builtin.zig_version.major >= 0 and builtin.zig_version.minor >= 11;
+pub const is_stage2 = @hasDecl(builtin, "zig_backend") and builtin.zig_backend != .stage1;
 
 pub usingnamespace types;
 
