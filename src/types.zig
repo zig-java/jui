@@ -8,7 +8,7 @@ const jui = @import("jui.zig");
 /// Stolen from https://github.com/ziglang/zig/pull/6272
 /// [1]extern struct isn't allowed, see https://github.com/ziglang/zig/issues/6535
 pub const va_list = switch (builtin.target.cpu.arch) {
-    .aarch64 => switch (builtin.target.os.tag) {
+    .aarch64, .arm => switch (builtin.target.os.tag) {
         .windows => [*c]u8,
         .ios, .macos, .tvos, .watchos => [*c]u8,
         else => *extern struct {
@@ -46,7 +46,10 @@ pub const va_list = switch (builtin.target.cpu.arch) {
             reg_save_area: *anyopaque,
         },
     },
-    else => @compileError("va_list not supported for this target yet"),
+    else => {
+        @compileLog(builtin.target.cpu.arch);
+        @compileError("va_list not supported for this target yet");
+    },
 };
 
 const os = builtin.target.os.tag;
