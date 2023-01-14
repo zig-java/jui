@@ -11,16 +11,50 @@ const System = opaque {
     } = undefined;
 
     pub fn load(env: *jui.JNIEnv) !void {
-        const class_local = try env.findClass("java/lang/System");
-        class_global = try env.newReference(.global, class_local);
-        if (class_global) |class| {
-            static_fields = .{
-                .in = try env.getStaticFieldId(class, "in", "Ljava/io/InputStream;"),
-                .out = try env.getStaticFieldId(class, "out", "Ljava/io/PrintStream;"),
-            };
-        } else {
-            return error.ClassNotFound;
-        }
+        struct {
+            var runner = std.once(_runner);
+            var _env: *jui.JNIEnv = undefined;
+            var _err: ?Error = null;
+
+            const Error =
+                jui.JNIEnv.FindClassError ||
+                jui.JNIEnv.NewReferenceError ||
+                jui.JNIEnv.GetFieldIdError ||
+                jui.JNIEnv.GetMethodIdError ||
+                jui.JNIEnv.GetStaticFieldIdError ||
+                jui.JNIEnv.GetStaticMethodIdError;
+
+            fn _load(arg: *jui.JNIEnv) !void {
+                _env = arg;
+                runner.call();
+                if (_err) |e| return e;
+            }
+
+            fn _runner() void {
+                const class_local = _env.findClass("java/lang/System") catch |e| {
+                    _err = e;
+                    return;
+                };
+                class_global = _env.newReference(.global, class_local) catch |e| {
+                    _err = e;
+                    return;
+                };
+                if (class_global) |class| {
+                    static_fields = .{
+                        .in = _env.getStaticFieldId(class, "in", "Ljava/io/InputStream;") catch |e| {
+                            _err = e;
+                            return;
+                        },
+                        .out = _env.getStaticFieldId(class, "out", "Ljava/io/PrintStream;") catch |e| {
+                            _err = e;
+                            return;
+                        },
+                    };
+                } else {
+                    _err = error.NoClassDefFoundError;
+                }
+            }
+        }._load(env) catch |e| return e;
     }
 
     pub fn unload(env: *jui.JNIEnv) void {
@@ -31,12 +65,14 @@ const System = opaque {
     }
 
     pub fn getIn(env: *jui.JNIEnv) !*InputStream {
-        const class = class_global orelse return error.ClasNotFound;
+        try load(env);
+        const class = class_global orelse return error.ClassNotFound;
         return @ptrCast(*InputStream, env.getStaticField(.object, class, static_fields.in));
     }
 
     pub fn getOut(env: *jui.JNIEnv) !*PrintStream {
-        const class = class_global orelse return error.ClasNotFound;
+        try load(env);
+        const class = class_global orelse return error.ClassNotFound;
         return @ptrCast(*PrintStream, env.getStaticField(.object, class, static_fields.out));
     }
 };
@@ -64,7 +100,8 @@ const PrintStream = opaque {
     var class_global: ?jui.jclass = null;
     var methods: struct {
         @"print(I)V": jui.jmethodID,
-        // printf: jui.jmethodID,
+        printf: jui.jmethodID,
+        @"print(Ljava/lang/Object;)V": jui.jmethodID,
     } = undefined;
 
     pub fn load(env: *jui.JNIEnv) !void {
@@ -73,7 +110,8 @@ const PrintStream = opaque {
         if (class_global) |class| {
             methods = .{
                 .@"print(I)V" = try env.getMethodId(class, "print", "(I)V"),
-                // .printf = try env.getMethodId(class, "printf", "(Ljava/lang/String;[java/lang/Object;)V"),
+                .printf = try env.getMethodId(class, "printf", "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;"),
+                .@"print(Ljava/lang/Object;)V" = try env.getMethodId(class, "print", "(Ljava/lang/Object;)V"),
             };
         } else {
             return error.ClassNotFound;
@@ -88,9 +126,15 @@ const PrintStream = opaque {
     }
 
     pub fn print(self: *PrintStream, env: *jui.JNIEnv, i: jui.jint) !void {
-        const class = class_global orelse return error.ClasNotLoaded;
+        const class = class_global orelse return error.ClassNotLoaded;
         _ = class;
         try env.callMethod(.void, @ptrCast(jui.jobject, self), methods.@"print(I)V", &[_]jui.jvalue{jui.jvalue.toJValue(i)});
+    }
+
+    pub fn @"print(Ljava/lang/Object;)V"(self: *PrintStream, env: *jui.JNIEnv, obj: jui.jobject) !void {
+        const class = class_global orelse return error.ClassNotLoaded;
+        _ = class;
+        try env.callMethod(.void, @ptrCast(jui.jobject, self), methods.@"print(Ljava/lang/Object;)V", &[_]jui.jvalue{jui.jvalue.toJValue(obj)});
     }
 };
 
@@ -126,12 +170,12 @@ const Scanner = opaque {
     }
 
     pub fn create(env: *jui.JNIEnv, input_stream: *InputStream) !*Scanner {
-        const class = class_global orelse return error.ClasNotLoaded;
+        const class = class_global orelse return error.ClassNotLoaded;
         return @ptrCast(*Scanner, try env.newObject(class, constructors.@"(Ljava/io/InputStream;)V", &[_]jui.jvalue{jui.jvalue.toJValue(@ptrCast(jui.jobject, input_stream))}));
     }
 
     pub fn nextInt(self: *Scanner, env: *jui.JNIEnv) !jui.jint {
-        const class = class_global orelse return error.ClasNotLoaded;
+        const class = class_global orelse return error.ClassNotLoaded;
         _ = class;
         return try env.callMethod(.int, @ptrCast(jui.jobject, self), methods.nextInt, null);
     }
@@ -170,10 +214,12 @@ pub fn jniMain(env: *jui.JNIEnv) !void {
     try InputStream.load(env);
 
     // Use the classes!
-    const system_input_stream = try System.getIn(env);
+    const in = try System.getIn(env);
+    const out = try System.getOut(env);
 
-    var scanner = try Scanner.create(env, system_input_stream);
+    var scanner = try Scanner.create(env, in);
+    try out.@"print(Ljava/lang/Object;)V"(env, @ptrCast(jui.jobject, scanner));
+
     const int = try scanner.nextInt(env);
-
-    std.log.info("Entered int: {}", .{int});
+    try out.print(env, int);
 }
