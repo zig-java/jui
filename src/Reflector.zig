@@ -15,7 +15,7 @@ pub fn getClass(self: *Reflector, name: [*:0]const u8) !Class {
     return Class.init(self, try self.env.newReference(.global, try self.env.findClass(name)));
 }
 
-pub fn ObjectType(name_: []const u8) type {
+pub fn ObjectType(comptime name_: []const u8) type {
     return struct {
         pub const object_class_name = name_;
     };
@@ -75,7 +75,7 @@ fn valueToDescriptor(comptime T: type) descriptors.Descriptor {
 
     return switch (T) {
         types.jint => .int,
-        void => .@"void",
+        void => .void,
         else => @compileError("Unsupported type: " ++ @typeName(T)),
     };
 }
@@ -246,7 +246,7 @@ fn ArgsFromDescriptor(comptime descriptor: *const descriptors.MethodDescriptor) 
     return std.meta.Tuple(&Ts);
 }
 
-pub fn Constructor(descriptor: descriptors.MethodDescriptor) type {
+pub fn Constructor(comptime descriptor: descriptors.MethodDescriptor) type {
     return struct {
         const Self = @This();
         pub const descriptor_ = descriptor;

@@ -1818,7 +1818,7 @@ test "getJNIVersion" {
     var env = getTestingJNIEnv();
 
     const version = env.getJNIVersion();
-    try testing.expectEqual(JNIVersion{ .major = 10, .minor = 0 }, version);
+    try testing.expectEqual(JNIVersion{ .major = 19, .minor = 0 }, version);
 }
 
 test "defineClass" {

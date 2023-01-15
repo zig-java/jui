@@ -111,7 +111,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
     }
 
     if (se.error_set) |_| {
-        return @call(.{}, function, args) catch |err| {
+        return @call(.auto, function, args) catch |err| {
             var maybe_ert = @errorReturnTrace();
             if (maybe_ert) |ert| {
                 var err_buf = std.ArrayList(u8).init(std.heap.page_allocator);
@@ -133,7 +133,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
             return undefined;
         };
     } else {
-        return @call(.{}, function, args);
+        return @call(.auto, function, args);
     }
 }
 

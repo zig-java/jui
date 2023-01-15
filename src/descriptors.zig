@@ -4,7 +4,7 @@ const jui = @import("jui.zig");
 pub const MethodDescriptor = struct {
     const Self = @This();
 
-    parameters: []*Descriptor,
+    parameters: []const *Descriptor,
     return_type: *Descriptor,
 
     pub fn stringify(self: Self, writer: anytype) anyerror!void {
@@ -14,7 +14,7 @@ pub const MethodDescriptor = struct {
         try self.return_type.stringify(writer);
     }
 
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
         for (self.parameters) |param| param.deinit(allocator);
         allocator.free(self.parameters);
         self.return_type.deinit(allocator);
@@ -42,11 +42,11 @@ pub const Descriptor = union(enum) {
     boolean: void,
 
     object: []const u8,
-    array: *Descriptor,
+    array: *const Descriptor,
     method: MethodDescriptor,
 
     /// Only valid for method `return_type`s
-    @"void": void,
+    void: void,
 
     pub fn stringify(self: Self, writer: anytype) anyerror!void {
         switch (self) {
@@ -114,7 +114,7 @@ pub const Descriptor = union(enum) {
         try self.humanStringify(buf.writer());
     }
 
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .object => |*o| allocator.free(o.*),
             .array => |*a| a.*.deinit(allocator),
