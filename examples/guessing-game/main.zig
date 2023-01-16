@@ -1,5 +1,8 @@
 const std = @import("std");
 const jui = @import("jui");
+const Scanner = @import("gen/java/util/Scanner.zig").Scanner;
+const InputStream = @import("gen/java/io/InputStream.zig").InputStream;
+const PrintStream = @import("gen/java/io/PrintStream.zig").PrintStream;
 
 const Descriptor = jui.descriptors.Descriptor;
 
@@ -77,110 +80,6 @@ const System = opaque {
     }
 };
 
-const InputStream = opaque {
-    var class_global: ?jui.jclass = null;
-
-    pub fn load(env: *jui.JNIEnv) !void {
-        const class_local = try env.findClass("java/io/InputStream");
-        class_global = try env.newReference(.global, class_local);
-        if (class_global) |_| {} else {
-            return error.ClassNotFound;
-        }
-    }
-
-    pub fn unload(env: *jui.JNIEnv) void {
-        if (class_global) |class| {
-            env.deleteReference(.global, class);
-            class_global = null;
-        }
-    }
-};
-
-const PrintStream = opaque {
-    var class_global: ?jui.jclass = null;
-    var methods: struct {
-        @"print(I)V": jui.jmethodID,
-        printf: jui.jmethodID,
-        @"print(Ljava/lang/Object;)V": jui.jmethodID,
-    } = undefined;
-
-    pub fn load(env: *jui.JNIEnv) !void {
-        const class_local = try env.findClass("java/io/PrintStream");
-        class_global = try env.newReference(.global, class_local);
-        if (class_global) |class| {
-            methods = .{
-                .@"print(I)V" = try env.getMethodId(class, "print", "(I)V"),
-                .printf = try env.getMethodId(class, "printf", "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;"),
-                .@"print(Ljava/lang/Object;)V" = try env.getMethodId(class, "print", "(Ljava/lang/Object;)V"),
-            };
-        } else {
-            return error.ClassNotFound;
-        }
-    }
-
-    pub fn unload(env: *jui.JNIEnv) void {
-        if (class_global) |class| {
-            env.deleteReference(.global, class);
-            class_global = null;
-        }
-    }
-
-    pub fn print(self: *PrintStream, env: *jui.JNIEnv, i: jui.jint) !void {
-        const class = class_global orelse return error.ClassNotLoaded;
-        _ = class;
-        try env.callMethod(.void, @ptrCast(jui.jobject, self), methods.@"print(I)V", &[_]jui.jvalue{jui.jvalue.toJValue(i)});
-    }
-
-    pub fn @"print(Ljava/lang/Object;)V"(self: *PrintStream, env: *jui.JNIEnv, obj: jui.jobject) !void {
-        const class = class_global orelse return error.ClassNotLoaded;
-        _ = class;
-        try env.callMethod(.void, @ptrCast(jui.jobject, self), methods.@"print(Ljava/lang/Object;)V", &[_]jui.jvalue{jui.jvalue.toJValue(obj)});
-    }
-};
-
-const Scanner = opaque {
-    var class_global: ?jui.jclass = null;
-    var constructors: struct {
-        @"(Ljava/io/InputStream;)V": jui.jmethodID,
-    } = undefined;
-    var methods: struct {
-        nextInt: jui.jmethodID,
-    } = undefined;
-
-    pub fn load(env: *jui.JNIEnv) !void {
-        const class_local = try env.findClass("java/util/Scanner");
-        class_global = try env.newReference(.global, class_local);
-        if (class_global) |class| {
-            constructors = .{
-                .@"(Ljava/io/InputStream;)V" = try env.getMethodId(class, "<init>", "(Ljava/io/InputStream;)V"),
-            };
-            methods = .{
-                .nextInt = try env.getMethodId(class, "nextInt", "()I"),
-            };
-        } else {
-            return error.ClassNotFound;
-        }
-    }
-
-    pub fn unload(env: *jui.JNIEnv) void {
-        if (class_global) |class| {
-            env.deleteReference(.global, class);
-            class_global = null;
-        }
-    }
-
-    pub fn create(env: *jui.JNIEnv, input_stream: *InputStream) !*Scanner {
-        const class = class_global orelse return error.ClassNotLoaded;
-        return @ptrCast(*Scanner, try env.newObject(class, constructors.@"(Ljava/io/InputStream;)V", &[_]jui.jvalue{jui.jvalue.toJValue(@ptrCast(jui.jobject, input_stream))}));
-    }
-
-    pub fn nextInt(self: *Scanner, env: *jui.JNIEnv) !jui.jint {
-        const class = class_global orelse return error.ClassNotLoaded;
-        _ = class;
-        return try env.callMethod(.int, @ptrCast(jui.jobject, self), methods.nextInt, null);
-    }
-};
-
 pub fn main() !void {
     // Construct vm...
     const JNI_1_10 = jui.JNIVersion{ .major = 10, .minor = 0 };
@@ -217,9 +116,9 @@ pub fn jniMain(env: *jui.JNIEnv) !void {
     const in = try System.getIn(env);
     const out = try System.getOut(env);
 
-    var scanner = try Scanner.create(env, in);
+    var scanner = try Scanner.@"<init>(Ljava/io/InputStream;)V"(env, @ptrCast(jui.jobject, in));
     try out.@"print(Ljava/lang/Object;)V"(env, @ptrCast(jui.jobject, scanner));
 
-    const int = try scanner.nextInt(env);
-    try out.print(env, int);
+    const int = try scanner.@"nextInt()I"(env);
+    try out.@"print(I)V"(env, int);
 }

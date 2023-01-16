@@ -14,15 +14,15 @@
 
             fn _load(arg: *jui.JNIEnv) !void {{
                 _env = arg;
-                _runner.call();
+                runner.call();
                 if (_err) |e| return e;
             }}
 
-            fn runner() void {{
-                _runner(_env) catch |e| _env = e;
+            fn _runner() void {{
+                _run(_env) catch |e| {{ _err = e; }};
             }}
 
-            fn _runner(inner_env: *jui.JNIEnv) !void {{
+            fn _run(inner_env: *jui.JNIEnv) !void {{
                 const class_local = try inner_env.findClass(classpath);
                 class_global = try inner_env.newReference(.global, class_local);
                 const class = class_global orelse return error.NoClassDefFoundError;

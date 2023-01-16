@@ -35,8 +35,6 @@ pub fn main() !void {
     var arena_alloc = arena.allocator();
     // Generate zig bindings
     {
-        _ = try std.fmt.format(stdout.writer(), "There are {} entries in the constant pool\n", .{class_file.constant_pool.entries.items.len});
-
         const class = class_file.constant_pool.get(class_file.this_class).class;
         const classpath = class_file.constant_pool.get(class.name_index).utf8.bytes;
         const classname = std.fs.path.basename(classpath);
@@ -45,8 +43,6 @@ pub fn main() !void {
 
         const class_dir = try out.makeOpenPath(dirname, .{});
         const zig_file = try class_dir.createFile(zig_filename, .{});
-
-        _ = try std.fmt.format(stdout.writer(), "{s}\n{s}\n{s}\n", .{ classpath, classname, dirname });
 
         const doc = doc: {
             var docs = std.ArrayList(u8).init(arena_alloc);
@@ -86,7 +82,7 @@ pub fn main() !void {
                 const name = field.getName().bytes;
                 const descriptor = field.getDescriptor().bytes;
                 const static = if (field.access_flags.static) "Static" else "";
-                try std.fmt.format(body.writer(), "        @\"{s}{s}\": jui.jfieldID,\n", .{ name, descriptor });
+                try std.fmt.format(body.writer(), "        @\"{s}_{s}\": jui.jfieldID,\n", .{ name, descriptor });
                 try std.fmt.format(load_entry.writer(), "                    .@\"{0s}_{1s}\" = try inner_env.get{2s}FieldId(class, \"{0s}\", \"{1s}\"),\n", .{ name, descriptor, static });
                 try writeFieldBindingFunction(&call_entry, arena_alloc, field);
             }
@@ -134,6 +130,8 @@ pub fn main() !void {
             .classname = classname,
             .body = body,
         });
+
+        _ = try std.fmt.format(stdout.writer(), "Successfully wrote {s}\n", .{classpath});
     }
 }
 
@@ -159,12 +157,15 @@ fn writeBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator
     const name = method.getName().bytes;
     const descriptor = method.getDescriptor().bytes;
 
+    const is_constructor = std.mem.eql(u8, name, "<init>");
+
     // Parse the descriptor
     var descriptor_info = try jui.descriptors.parseString(alloc, descriptor);
     defer descriptor_info.deinit(alloc);
 
-    const self = if (method.access_flags.static) "" else "self: @This(), ";
-    const self2 = if (method.access_flags.static) "class" else "self";
+    const self = if (method.access_flags.static) "" else "self: *@This(), ";
+    const self2 = if (method.access_flags.static) "class" else "@ptrCast(jui.jobject, self)";
+    const class_assign = if (method.access_flags.static) "const class" else "_";
     const static = if (method.access_flags.static) "Static" else "";
 
     const return_type = descriptorAsTypeString(descriptor_info.method.return_type.*);
@@ -188,7 +189,7 @@ fn writeBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator
             i,
             type_string,
         });
-        try std.fmt.format(call_parameters.writer(), "{s}arg{}", .{
+        try std.fmt.format(call_parameters.writer(), "{s}jui.jvalue.toJValue(arg{})", .{
             if (i == 0) "" else ", ",
             i,
         });
@@ -197,11 +198,26 @@ fn writeBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator
     if (has_parameters)
         try std.fmt.format(call_parameters.writer(), "}}", .{});
 
+    if (is_constructor) {
+        try std.fmt.format(call_entry.writer(),
+            \\    pub fn @"{[name]s}{[descriptor]s}"(env: *jui.JNIEnv{[parameters]s}) !*@This() {{
+            \\        try load(env);
+            \\        const class = class_global orelse return error.ClassNotLoaded;
+            \\        return @ptrCast(*@This(), try env.newObject(class, methods.@"{[name]s}{[descriptor]s}", {[call_parameters]s}));
+            \\    }}
+            \\
+        , .{
+            .name = name,
+            .descriptor = descriptor,
+            .parameters = parameters.items,
+            .call_parameters = call_parameters.items,
+        });
+    } else {
     try std.fmt.format(call_entry.writer(),
         \\    pub fn @"{[name]s}{[descriptor]s}"({[self]s}env: *jui.JNIEnv{[parameters]s}) !{[return_type]s} {{
         \\        try load(env);
-        \\        const class = class_global orelse return error.ClassNotFound;
-        \\        return env.call{[static]s}Method(.{[call_return_type]s}, {[self2]s}, {[call_parameters]s});
+        \\        {[class_assign]s} = class_global orelse return error.ClassNotFound;
+        \\        return env.call{[static]s}Method(.{[call_return_type]s}, {[self2]s}, methods.@"{[name]s}{[descriptor]s}", {[call_parameters]s});
         \\    }}
         \\
     , .{
@@ -214,7 +230,11 @@ fn writeBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator
         .static = static,
         .parameters = parameters.items,
         .call_parameters = call_parameters.items,
+        .class_assign = class_assign,
     });
+
+    }
+
 }
 
 fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator, field: cf.FieldInfo) !void {
@@ -226,8 +246,9 @@ fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allo
     var descriptor_info = try jui.descriptors.parseString(alloc, descriptor);
     defer descriptor_info.deinit(alloc);
 
-    const self = if (field.access_flags.static) "" else "self: @This(), ";
-    const self2 = if (field.access_flags.static) "class" else "self";
+    const self = if (field.access_flags.static) "" else "self: *@This(), ";
+    const self2 = if (field.access_flags.static) "class" else "@ptrCast(jui.jobject, self)";
+    const class_assign = if (field.access_flags.static) "const class" else "_";
     const static = if (field.access_flags.static) "Static" else "";
 
     const return_type = descriptorAsTypeString(descriptor_info.*);
@@ -235,8 +256,8 @@ fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allo
     try std.fmt.format(call_entry.writer(),
         \\    pub fn @"get_{[name]s}_{[descriptor]s}"({[self]s}env: *jui.JNIEnv) !{[return_type]s} {{
         \\        try load(env);
-        \\        const class = class_global orelse return error.ClassNotFound;
-        \\        return env.get{[static]s}Field(.{[call_return_type]s}, {[self2]s}, methods.@"{[name]s}{[descriptor]s}");
+        \\        {[class_assign]s} = class_global orelse return error.ClassNotFound;
+        \\        return env.get{[static]s}Field(.{[call_return_type]s}, {[self2]s}, fields.@"{[name]s}_{[descriptor]s}");
         \\    }}
         \\
     , .{
@@ -247,14 +268,15 @@ fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allo
         .return_type = return_type,
         .call_return_type = try descriptor_info.humanStringifyConst(),
         .static = static,
+        .class_assign = class_assign,
     });
 
     if (!field.access_flags.final) {
         try std.fmt.format(call_entry.writer(),
             \\    pub fn @"set_{[name]s}_{[descriptor]s}"({[self]s}env: *jui.JNIEnv, arg: {[return_type]s}) !void {{
             \\        try load(env);
-            \\        const class = class_global orelse return error.ClassNotFound;
-            \\        try env.call{[static]s}Field(.{[call_return_type]s}, {[self2]s}, fields.@"{[name]s}{[descriptor]s}", arg);
+            \\        {[class_assign]s} = class_global orelse return error.ClassNotFound;
+            \\        try env.call{[static]s}Field(.{[call_return_type]s}, {[self2]s}, fields.@"{[name]s}_{[descriptor]s}", arg);
             \\    }}
             \\
         , .{
@@ -265,6 +287,7 @@ fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allo
             .return_type = return_type,
             .call_return_type = try descriptor_info.humanStringifyConst(),
             .static = static,
+            .class_assign = class_assign,
         });
     }
 }
