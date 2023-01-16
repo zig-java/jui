@@ -95,7 +95,7 @@ pub const Descriptor = union(enum) {
             .object => |o| {
                 var i: usize = 0;
                 var tc = std.mem.count(u8, o, "/");
-                var t = std.mem.tokenize(o, "/");
+                var t = std.mem.tokenize(u8, o, "/");
                 while (t.next()) |z| : (i += 1) {
                     _ = try writer.writeAll(z);
                     if (i != tc) try writer.writeByte('.');
@@ -112,6 +112,23 @@ pub const Descriptor = union(enum) {
     pub fn toHumanStringArrayList(self: Self, buf: *std.ArrayList(u8)) !void {
         try buf.ensureCapacity(0);
         try self.humanStringify(buf.writer());
+    }
+
+    pub fn humanStringifyConst(self: Self) ![]const u8{
+        return switch (self) {
+            .byte => "byte",
+            .char => "char",
+            .int => "int",
+            .short => "short",
+            .long => "long",
+            .float => "float",
+            .double => "double",
+            .boolean => "boolean",
+            .void => "void",
+            .object => "object",
+            .array => "array",
+            .method => "method",
+        };
     }
 
     pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
