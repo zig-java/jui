@@ -38,13 +38,18 @@ pub fn build(b: *std.build.Builder) void {
         exe.addPackagePath("jui", "src/jui.zig");
         exe.addPackagePath("cf", "dep/cf/cf.zig");
 
-        // exe.addLibraryPath(b.pathJoin(&.{ java_home, libjvm_path }));
-        // exe.linkSystemLibrary("jvm");
-        // exe.linkLibC();
-
         exe.setTarget(target);
         exe.setBuildMode(mode);
         exe.install();
+
+        const run_cmd = exe.run();
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("class2zig", "Run class2zig tool");
+        run_step.dependOn(&run_cmd.step);
     }
 
     //Example
