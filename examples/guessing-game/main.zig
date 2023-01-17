@@ -85,9 +85,7 @@ pub fn main() !void {
     const JNI_1_10 = jui.JNIVersion{ .major = 10, .minor = 0 };
     const args = jui.JavaVMInitArgs{
         .version = JNI_1_10,
-        .options = &.{
-            .{ .option = "-Djava.class.path=./test/src" },
-        },
+        .options = &.{},
         .ignore_unrecognized = true,
     };
     var result = jui.JavaVM.createJavaVM(&args) catch |err| {
@@ -102,7 +100,6 @@ pub fn main() !void {
     std.debug.assert(jvm == created_jvm.?);
 
     try jniMain(env);
-    // jui.wrapErrors(jniMain, .{env});
 }
 
 pub fn jniMain(env: *jui.JNIEnv) !void {
