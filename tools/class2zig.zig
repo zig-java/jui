@@ -62,8 +62,17 @@ pub fn main() !void {
         try writeConstructors(class_file.methods.items, arena_alloc, constructors.writer());
 
         var static_field_accessors = std.ArrayList(u8).init(arena_alloc);
+        defer static_field_accessors.deinit();
+
+        try writeStaticFieldAccessors(class_file.fields.items, arena_alloc, static_field_accessors.writer());
+
         var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
+
         var field_accessors = std.ArrayList(u8).init(arena_alloc);
+        defer field_accessors.deinit();
+
+        try writeFieldAccessors(class_file.fields.items, arena_alloc, field_accessors.writer());
+
         var method_accessors = std.ArrayList(u8).init(arena_alloc);
 
         // Write to file
@@ -124,6 +133,98 @@ fn writeFieldDecls(fields: []cf.FieldInfo, writer: anytype) !void {
             try std.fmt.format(writer, "            @\"{s}_{s}\": ?jui.jfieldID,\n", .{ name, descriptor });
         }
         try writer.writeAll("       ");
+    }
+}
+
+fn writeStaticFieldAccessors(fields: []cf.FieldInfo, allocator: std.mem.Allocator, writer: anytype) !void {
+    if (fields.len > 0) {
+        try writer.writeAll("\n");
+        for (fields) |field| {
+            if (!field.access_flags.static or field.access_flags.protected or field.access_flags.private) continue;
+            const name = field.getName().bytes;
+            const descriptor = field.getDescriptor().bytes;
+            var descriptor_info = try jui.descriptors.parseString(allocator, descriptor);
+            try std.fmt.format(writer,
+                \\        pub fn {[name]s}(self: @This(), env: *jui.JNIEnv) !*{[return_type]s} {{
+                \\            const field_id = self.fields.@"{[name]s}{[descriptor]s}" orelse field_id: {{
+                \\                self.fields.@"{[name]s}{[descriptor]s}" = try env.getFieldId(self.class, "{[name]s}", "{[descriptor]s}");
+                \\                break :field_id self.methods.@"{[name]s}_{[descriptor]s}".?;
+                \\            }};
+                \\            return try env.getStaticField(.{[type]s} , self.class, field_id);
+                \\        }}
+                \\
+            , .{
+                .name = name,
+                .descriptor = descriptor,
+                .return_type = descriptorAsTypeString(descriptor_info.*),
+                .type = try descriptor_info.humanStringifyConst(),
+            });
+            if (field.access_flags.final) continue;
+            const upper_name = try allocator.dupe(u8, name);
+            defer allocator.free(upper_name);
+            upper_name[0] = std.ascii.toUpper(upper_name[0]);
+            try std.fmt.format(writer,
+                \\        pub fn set{[name]s}(self: @This(), env: *jui.JNIEnv) !*{[return_type]s} {{
+                \\            const field_id = self.fields.@"{[name]s}{[descriptor]s}" orelse field_id: {{
+                \\                self.fields.@"{[name]s}{[descriptor]s}" = try env.getFieldId(self.class, "{[name]s}", "{[descriptor]s}");
+                \\                break :field_id self.methods.@"{[name]s}_{[descriptor]s}".?;
+                \\            }};
+                \\            return try env.getField(.{[type]s} , self.class, field_id);
+                \\        }}
+                \\
+            , .{
+                .name = upper_name,
+                .descriptor = descriptor,
+                .return_type = descriptorAsTypeString(descriptor_info.*),
+                .type = try descriptor_info.humanStringifyConst(),
+            });
+        }
+    }
+}
+
+fn writeFieldAccessors(fields: []cf.FieldInfo, allocator: std.mem.Allocator, writer: anytype) !void {
+    if (fields.len > 0) {
+        try writer.writeAll("\n");
+        for (fields) |field| {
+            if (field.access_flags.static or field.access_flags.protected or field.access_flags.private) continue;
+            const name = field.getName().bytes;
+            const descriptor = field.getDescriptor().bytes;
+            var descriptor_info = try jui.descriptors.parseString(allocator, descriptor);
+            try std.fmt.format(writer,
+                \\    pub fn {[name]s}(self: @This(), env: *jui.JNIEnv) !*{[return_type]s} {{
+                \\        const field_id = self.fields.@"{[name]s}{[descriptor]s}" orelse field_id: {{
+                \\            self.fields.@"{[name]s}{[descriptor]s}" = try env.getFieldId(self.Class.class, "{[name]s}", "{[descriptor]s}");
+                \\            break :field_id self.methods.@"{[name]s}_{[descriptor]s}".?;
+                \\        }};
+                \\        return try env.getField(.{[type]s}, self.object, field_id);
+                \\    }}
+                \\
+            , .{
+                .name = name,
+                .descriptor = descriptor,
+                .return_type = descriptorAsTypeString(descriptor_info.*),
+                .type = try descriptor_info.humanStringifyConst(),
+            });
+            if (field.access_flags.final) continue;
+            const upper_name = try allocator.dupe(u8, name);
+            defer allocator.free(upper_name);
+            upper_name[0] = std.ascii.toUpper(upper_name[0]);
+            try std.fmt.format(writer,
+                \\    pub fn set{[name]s}(self: @This(), env: *jui.JNIEnv) !*{[return_type]s} {{
+                \\        const field_id = self.fields.@"{[name]s}{[descriptor]s}" orelse field_id: {{
+                \\            self.fields.@"{[name]s}{[descriptor]s}" = try env.getFieldId(self.Class.class, "{[name]s}", "{[descriptor]s}");
+                \\            break :field_id self.methods.@"{[name]s}_{[descriptor]s}".?;
+                \\        }};
+                \\        return try env.getField(.{[type]s}, self.object, field_id);
+                \\    }}
+                \\
+            , .{
+                .name = upper_name,
+                .descriptor = descriptor,
+                .return_type = descriptorAsTypeString(descriptor_info.*),
+                .type = try descriptor_info.humanStringifyConst(),
+            });
+        }
     }
 }
 
