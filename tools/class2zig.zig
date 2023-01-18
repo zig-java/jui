@@ -116,22 +116,31 @@ pub fn main() !void {
 }
 
 fn writeFieldDecls(fields: []cf.FieldInfo, writer: anytype) !void {
-    for (fields) |field| {
-        const name = field.getName().bytes;
-        const descriptor = field.getDescriptor().bytes;
-        try std.fmt.format(writer, "        @\"{s}_{s}\": ?jui.jfieldID,\n", .{ name, descriptor });
+    if (fields.len > 0) {
+        try writer.writeAll("\n");
+        for (fields) |field| {
+            const name = field.getName().bytes;
+            const descriptor = field.getDescriptor().bytes;
+            try std.fmt.format(writer, "            @\"{s}_{s}\": ?jui.jfieldID,\n", .{ name, descriptor });
+        }
+        try writer.writeAll("       ");
     }
 }
 
 fn writeMethodDecls(methods: []cf.MethodInfo, writer: anytype) !void {
-    for (methods) |method| {
-        const name = method.getName().bytes;
-        const descriptor = method.getDescriptor().bytes;
-        try std.fmt.format(writer, "        @\"{s}{s}\": ?jui.jmethodID,\n", .{ name, descriptor });
+    if (methods.len > 0) {
+        try writer.writeAll("\n");
+        for (methods) |method| {
+            const name = method.getName().bytes;
+            const descriptor = method.getDescriptor().bytes;
+            try std.fmt.format(writer, "            @\"{s}{s}\": ?jui.jmethodID,\n", .{ name, descriptor });
+        }
+        try writer.writeAll("       ");
     }
 }
 
 fn writeConstructors(methods: []cf.MethodInfo, allocator: std.mem.Allocator, writer: anytype) !void {
+    if (methods.len > 0) try writer.writeAll("\n");
     for (methods) |method| {
         const name = method.getName().bytes;
         if (!std.mem.eql(u8, name, "<init>")) continue;
@@ -142,7 +151,10 @@ fn writeConstructors(methods: []cf.MethodInfo, allocator: std.mem.Allocator, wri
         try std.fmt.format(writer,
             \\        pub fn @"<init>{[descriptor]s}"(self: @This(), env: *jui.JNIEnv, args: anytype) !*@This() {{
             \\            const arg_info = @typeInfo(args);
-            \\            const method_id = self.methods.@"<init>{[descriptor]s}";
+            \\            const method_id = self.methods.@"<init>{[descriptor]s}" orelse method_id: {{
+            \\                self.methods.@"<init>{[descriptor]s}" = try env.getMethodId(self.class, "<init>", "{[descriptor]s}");
+            \\                break :method_id self.methods.@"<init>{[descriptor]s}".?;
+            \\            }};
             \\            comptime var arg_array = [_]jui.jvalue{{}};
             \\            inline for (args) |arg| {{
             \\                arg_array ++ .{{jui.jvalue.fromValue(arg)}};
