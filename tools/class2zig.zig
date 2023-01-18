@@ -44,94 +44,116 @@ pub fn main() !void {
         const class_dir = try out.makeOpenPath(dirname, .{});
         const zig_file = try class_dir.createFile(zig_filename, .{});
 
-        const doc = doc: {
-            var docs = std.ArrayList(u8).init(arena_alloc);
-            defer docs.deinit();
-            try docs.appendSlice("/// Opaque type corresponding to ");
-            try docs.appendSlice(classpath);
-            break :doc try docs.toOwnedSlice();
-        };
+        // Declarations
 
-        const loadfn = @embedFile("loadfn.zig");
+        var field_decls = std.ArrayList(u8).init(arena_alloc);
+        defer field_decls.deinit();
 
-        const body = body: {
-            var body = std.ArrayList(u8).init(arena_alloc);
-            defer body.deinit();
-            try std.fmt.format(body.writer(), "    const classpath = \"{s}\";\n", .{classpath});
-            try std.fmt.format(body.writer(), "    var class_global: jui.jclass = null;\n", .{});
+        try writeFieldDecls(class_file.fields.items, field_decls.writer());
 
-            var load_entry = std.ArrayList(u8).init(arena_alloc);
-            defer load_entry.deinit();
+        var method_decls = std.ArrayList(u8).init(arena_alloc);
+        defer method_decls.deinit();
 
-            var call_entry = std.ArrayList(u8).init(arena_alloc);
-            defer call_entry.deinit();
+        try writeMethodDecls(class_file.methods.items, method_decls.writer());
 
-            // Add a newline to leave the comment in loadfn
-            try load_entry.append('\n');
+        var constructors = std.ArrayList(u8).init(arena_alloc);
+        defer constructors.deinit();
 
-            const will_write_fields = class_file.fields.items.len != 0;
-            const will_write_methods = class_file.methods.items.len != 0;
+        try writeConstructors(class_file.methods.items, arena_alloc, constructors.writer());
 
-            // Write fields
-            if (will_write_fields) {
-                try std.fmt.format(body.writer(), "    var fields: struct {{\n", .{});
-                try std.fmt.format(load_entry.writer(), "                fields = .{{\n", .{});
-            }
+        var static_field_accessors = std.ArrayList(u8).init(arena_alloc);
+        var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
+        var field_accessors = std.ArrayList(u8).init(arena_alloc);
+        var method_accessors = std.ArrayList(u8).init(arena_alloc);
 
-            for (class_file.fields.items) |field| {
-                const name = field.getName().bytes;
-                const descriptor = field.getDescriptor().bytes;
-                const static = if (field.access_flags.static) "Static" else "";
-                try std.fmt.format(body.writer(), "        @\"{s}_{s}\": jui.jfieldID,\n", .{ name, descriptor });
-                try std.fmt.format(load_entry.writer(), "                    .@\"{0s}_{1s}\" = try inner_env.get{2s}FieldId(class, \"{0s}\", \"{1s}\"),\n", .{ name, descriptor, static });
-                try writeFieldBindingFunction(&call_entry, arena_alloc, field);
-            }
-
-            if (will_write_fields) {
-                try std.fmt.format(body.writer(), "    }} = undefined;\n", .{});
-                try std.fmt.format(load_entry.writer(), "                }};\n", .{});
-            }
-
-            // Write methods
-            if (will_write_methods) {
-                try std.fmt.format(body.writer(), "    var methods: struct {{\n", .{});
-                try std.fmt.format(load_entry.writer(), "                methods = .{{\n", .{});
-            }
-
-            for (class_file.methods.items) |method| {
-                const name = method.getName().bytes;
-                const descriptor = method.getDescriptor().bytes;
-                const static = if (method.access_flags.static) "Static" else "";
-                try std.fmt.format(body.writer(), "        @\"{s}{s}\": jui.jmethodID,\n", .{ name, descriptor });
-                try std.fmt.format(load_entry.writer(), "                    .@\"{0s}{1s}\" = try inner_env.get{2s}MethodId(class, \"{0s}\", \"{1s}\"),\n", .{ name, descriptor, static });
-                try writeBindingFunction(&call_entry, arena_alloc, method);
-            }
-
-            if (will_write_methods) {
-                try std.fmt.format(body.writer(), "    }} = undefined;\n", .{});
-                try std.fmt.format(load_entry.writer(), "                }};\n", .{});
-            }
-
-            try std.fmt.format(body.writer(), loadfn, .{ .load_entry = load_entry.items });
-            try body.appendSlice(try call_entry.toOwnedSlice());
-            break :body try body.toOwnedSlice();
-        };
-
-        _ = try std.fmt.format(zig_file.writer(),
+        // Write to file
+        const writer = zig_file.writer();
+        try writer.print(
             \\const std = @import("std");
             \\const jui = @import("jui");
-            \\{[doc]s}
-            \\pub const {[classname]s} = opaque {{
-            \\{[body]s}
-            \\}};
             \\
+            \\const {[classname]s} = struct {{
+            \\    const Instance = @This();
+            \\    pub const Class = struct {{
+            \\        fields: struct {{ {[field_decls]s} }},
+            \\        methods: struct {{ {[method_decls]s} }},
+            \\        class: jui.jclass,
+            \\        const classpath = "{[classpath]s}";
+            \\        pub fn load(env: *jui.JNIEnv) !@This() {{
+            \\            const class_local = try env.findClass(classpath);
+            \\            const class = try env.newReference(.global, class_local);
+            \\            return @This(){{
+            \\                .fields = .{{}},
+            \\                .methods = .{{}},
+            \\                .class = class,
+            \\            }};
+            \\        }}
+            \\        {[constructors]s}
+            \\        {[static_field_accessors]s}
+            \\        {[static_method_accessors]s}
+            \\    }};
+            \\
+            \\    class: *Class,
+            \\    object: jui.jobject,
+            \\
+            \\    {[field_accessors]s}
+            \\    {[method_accessors]s}
+            \\}};
         , .{
-            .doc = doc,
             .classname = classname,
-            .body = body,
+            .classpath = classpath,
+            .field_decls = field_decls.items,
+            .method_decls = method_decls.items,
+            .constructors = constructors.items,
+            .static_field_accessors = static_field_accessors.items,
+            .static_method_accessors = static_method_accessors.items,
+            .field_accessors = field_accessors.items,
+            .method_accessors = method_accessors.items,
         });
 
         _ = try std.fmt.format(stdout.writer(), "Successfully wrote {s}\n", .{classpath});
+    }
+}
+
+fn writeFieldDecls(fields: []cf.FieldInfo, writer: anytype) !void {
+    for (fields) |field| {
+        const name = field.getName().bytes;
+        const descriptor = field.getDescriptor().bytes;
+        try std.fmt.format(writer, "        @\"{s}_{s}\": ?jui.jfieldID,\n", .{ name, descriptor });
+    }
+}
+
+fn writeMethodDecls(methods: []cf.MethodInfo, writer: anytype) !void {
+    for (methods) |method| {
+        const name = method.getName().bytes;
+        const descriptor = method.getDescriptor().bytes;
+        try std.fmt.format(writer, "        @\"{s}{s}\": ?jui.jmethodID,\n", .{ name, descriptor });
+    }
+}
+
+fn writeConstructors(methods: []cf.MethodInfo, allocator: std.mem.Allocator, writer: anytype) !void {
+    for (methods) |method| {
+        const name = method.getName().bytes;
+        if (!std.mem.eql(u8, name, "<init>")) continue;
+
+        const descriptor = method.getDescriptor().bytes;
+        var descriptor_info = try jui.descriptors.parseString(allocator, descriptor);
+        std.debug.assert(descriptor_info.* == .method);
+        try std.fmt.format(writer,
+            \\        pub fn @"<init>{[descriptor]s}"(self: @This(), env: *jui.JNIEnv, args: anytype) !*@This() {{
+            \\            const arg_info = @typeInfo(args);
+            \\            const method_id = self.methods.@"<init>{[descriptor]s}";
+            \\            comptime var arg_array = [_]jui.jvalue{{}};
+            \\            inline for (args) |arg| {{
+            \\                arg_array ++ .{{jui.jvalue.fromValue(arg)}};
+            \\            }}
+            \\            const object = try env.newObject(self.class, method_id, &arg_array);
+            \\            return Instance {{ .class = self, .object = object }};
+            \\        }}
+            \\
+        , .{
+            .descriptor = descriptor,
+        });
     }
 }
 
@@ -213,28 +235,26 @@ fn writeBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator
             .call_parameters = call_parameters.items,
         });
     } else {
-    try std.fmt.format(call_entry.writer(),
-        \\    pub fn @"{[name]s}{[descriptor]s}"({[self]s}env: *jui.JNIEnv{[parameters]s}) !{[return_type]s} {{
-        \\        try load(env);
-        \\        {[class_assign]s} = class_global orelse return error.ClassNotFound;
-        \\        return env.call{[static]s}Method(.{[call_return_type]s}, {[self2]s}, methods.@"{[name]s}{[descriptor]s}", {[call_parameters]s});
-        \\    }}
-        \\
-    , .{
-        .name = name,
-        .descriptor = descriptor,
-        .self = self,
-        .self2 = self2,
-        .return_type = return_type,
-        .call_return_type = try descriptor_info.method.return_type.humanStringifyConst(),
-        .static = static,
-        .parameters = parameters.items,
-        .call_parameters = call_parameters.items,
-        .class_assign = class_assign,
-    });
-
+        try std.fmt.format(call_entry.writer(),
+            \\    pub fn @"{[name]s}{[descriptor]s}"({[self]s}env: *jui.JNIEnv{[parameters]s}) !{[return_type]s} {{
+            \\        try load(env);
+            \\        {[class_assign]s} = class_global orelse return error.ClassNotFound;
+            \\        return env.call{[static]s}Method(.{[call_return_type]s}, {[self2]s}, methods.@"{[name]s}{[descriptor]s}", {[call_parameters]s});
+            \\    }}
+            \\
+        , .{
+            .name = name,
+            .descriptor = descriptor,
+            .self = self,
+            .self2 = self2,
+            .return_type = return_type,
+            .call_return_type = try descriptor_info.method.return_type.humanStringifyConst(),
+            .static = static,
+            .parameters = parameters.items,
+            .call_parameters = call_parameters.items,
+            .class_assign = class_assign,
+        });
     }
-
 }
 
 fn writeFieldBindingFunction(call_entry: *std.ArrayList(u8), alloc: std.mem.Allocator, field: cf.FieldInfo) !void {
