@@ -44,7 +44,7 @@ pub fn main() !void {
         const class_dir = try out.makeOpenPath(dirname, .{});
         const zig_file = try class_dir.createFile(zig_filename, .{});
 
-        // Declarations
+        // Write Declarations
 
         var field_decls = std.ArrayList(u8).init(arena_alloc);
         defer field_decls.deinit();
@@ -56,24 +56,60 @@ pub fn main() !void {
 
         try writeMethodDecls(class_file.methods.items, method_decls.writer());
 
+        // Sort methods
+
+        var constructor_overloads = std.ArrayList(cf.MethodInfo).init(arena_alloc);
+        var method_overloads = std.StringHashMap(std.ArrayList(cf.MethodInfo)).init(arena_alloc);
+        var static_method_overloads = std.StringHashMap(std.ArrayList(cf.MethodInfo)).init(arena_alloc);
+
+        for (class_file.methods.items) |method| {
+            const name = method.getName().bytes;
+            if (method.access_flags.static) {
+                if (std.mem.eql(u8, name, "<init>")) {
+                    try constructor_overloads.push(method);
+                    continue;
+                }
+                const entry = try static_method_overloads.getOrPut(name);
+                if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(cf.MethodInfo).init(arena_alloc);
+                try entry.value_ptr.*.append(method);
+                continue;
+            }
+            const entry = try method_overloads.getOrPut(name);
+            if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(cf.MethodInfo).init(arena_alloc);
+            entry.value_ptr.*.append(method);
+        }
+
+        // Write methods
+
         var constructors = std.ArrayList(u8).init(arena_alloc);
         defer constructors.deinit();
 
-        try writeConstructors(class_file.methods.items, arena_alloc, constructors.writer());
+        try writeConstructors(constructor_overloads.items, arena_alloc, constructors.writer());
+
+        var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
+        defer static_method_accessors.deinit();
+
+        {
+            var iter = static_method_overloads.iterator();
+            while (iter.next()) |entry| {
+                try writeStaticMethodAccessors(entry.key_ptr.*, entry.value_ptr.*.items, arena_alloc, static_method_accessors.writer());
+            }
+        }
+
+        var method_accessors = std.ArrayList(u8).init(arena_alloc);
+        defer method_accessors.deinit();
+
+        // Write field accessors
 
         var static_field_accessors = std.ArrayList(u8).init(arena_alloc);
         defer static_field_accessors.deinit();
 
         try writeStaticFieldAccessors(class_file.fields.items, arena_alloc, static_field_accessors.writer());
 
-        var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
-
         var field_accessors = std.ArrayList(u8).init(arena_alloc);
         defer field_accessors.deinit();
 
         try writeFieldAccessors(class_file.fields.items, arena_alloc, field_accessors.writer());
-
-        var method_accessors = std.ArrayList(u8).init(arena_alloc);
 
         // Write to file
         const writer = zig_file.writer();
@@ -108,6 +144,10 @@ pub fn main() !void {
             \\    {[field_accessors]s}
             \\    {[method_accessors]s}
             \\}};
+            \\comptime {{
+            \\    std.testing.refAllDecls({[classname]s});
+            \\    std.testing.refAllDecls({[classname]s}.Class);
+            \\}}
         , .{
             .classname = classname,
             .classpath = classpath,
@@ -251,7 +291,6 @@ fn writeConstructors(methods: []cf.MethodInfo, allocator: std.mem.Allocator, wri
         std.debug.assert(descriptor_info.* == .method);
         try std.fmt.format(writer,
             \\        pub fn @"<init>{[descriptor]s}"(self: @This(), env: *jui.JNIEnv, args: anytype) !*@This() {{
-            \\            const arg_info = @typeInfo(args);
             \\            const method_id = self.methods.@"<init>{[descriptor]s}" orelse method_id: {{
             \\                self.methods.@"<init>{[descriptor]s}" = try env.getMethodId(self.class, "<init>", "{[descriptor]s}");
             \\                break :method_id self.methods.@"<init>{[descriptor]s}".?;
