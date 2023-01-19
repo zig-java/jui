@@ -66,7 +66,7 @@ pub fn main() !void {
             const name = method.getName().bytes;
             if (method.access_flags.static) {
                 if (std.mem.eql(u8, name, "<init>")) {
-                    try constructor_overloads.push(method);
+                    try constructor_overloads.append(method);
                     continue;
                 }
                 const entry = try static_method_overloads.getOrPut(name);
@@ -76,7 +76,7 @@ pub fn main() !void {
             }
             const entry = try method_overloads.getOrPut(name);
             if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(cf.MethodInfo).init(arena_alloc);
-            entry.value_ptr.*.append(method);
+            try entry.value_ptr.*.append(method);
         }
 
         // Write methods
@@ -89,12 +89,12 @@ pub fn main() !void {
         var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
         defer static_method_accessors.deinit();
 
-        {
-            var iter = static_method_overloads.iterator();
-            while (iter.next()) |entry| {
-                try writeStaticMethodAccessors(entry.key_ptr.*, entry.value_ptr.*.items, arena_alloc, static_method_accessors.writer());
-            }
-        }
+        // {
+        //     var iter = static_method_overloads.iterator();
+        //     while (iter.next()) |entry| {
+        //         try writeStaticMethodAccessors(entry.key_ptr.*, entry.value_ptr.*.items, arena_alloc, static_method_accessors.writer());
+        //     }
+        // }
 
         var method_accessors = std.ArrayList(u8).init(arena_alloc);
         defer method_accessors.deinit();
