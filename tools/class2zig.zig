@@ -64,11 +64,11 @@ pub fn main() !void {
 
         for (class_file.methods.items) |method| {
             const name = method.getName().bytes;
+            if (std.mem.eql(u8, name, "<init>")) {
+                try constructor_overloads.append(method);
+                continue;
+            }
             if (method.access_flags.static) {
-                if (std.mem.eql(u8, name, "<init>")) {
-                    try constructor_overloads.append(method);
-                    continue;
-                }
                 const entry = try static_method_overloads.getOrPut(name);
                 if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(cf.MethodInfo).init(arena_alloc);
                 try entry.value_ptr.*.append(method);
@@ -79,22 +79,26 @@ pub fn main() !void {
             try entry.value_ptr.*.append(method);
         }
 
+        std.log.info("Found {} constructors", .{
+            constructor_overloads.items.len,
+        });
+
         // Write methods
 
         var constructors = std.ArrayList(u8).init(arena_alloc);
         defer constructors.deinit();
 
-        try writeConstructors(constructor_overloads.items, arena_alloc, constructors.writer());
+        try writeConstructors(constructor_overloads.items, constructors.writer());
 
         var static_method_accessors = std.ArrayList(u8).init(arena_alloc);
         defer static_method_accessors.deinit();
 
-        // {
-        //     var iter = static_method_overloads.iterator();
-        //     while (iter.next()) |entry| {
-        //         try writeStaticMethodAccessors(entry.key_ptr.*, entry.value_ptr.*.items, arena_alloc, static_method_accessors.writer());
-        //     }
-        // }
+        {
+            var iter = static_method_overloads.iterator();
+            while (iter.next()) |entry| {
+                try writeStaticMethod(entry.key_ptr.*, entry.value_ptr.*.items, arena_alloc, static_method_accessors.writer());
+            }
+        }
 
         var method_accessors = std.ArrayList(u8).init(arena_alloc);
         defer method_accessors.deinit();
@@ -280,33 +284,71 @@ fn writeMethodDecls(methods: []cf.MethodInfo, writer: anytype) !void {
     }
 }
 
-fn writeConstructors(methods: []cf.MethodInfo, allocator: std.mem.Allocator, writer: anytype) !void {
-    if (methods.len > 0) try writer.writeAll("\n");
-    for (methods) |method| {
-        const name = method.getName().bytes;
-        if (!std.mem.eql(u8, name, "<init>")) continue;
+fn writeConstructors(methods: []cf.MethodInfo, writer: anytype) !void {
+    if (methods.len == 0) return;
+    try writer.writeAll("\n");
 
+    try std.fmt.format(writer,
+        \\        pub fn new(self: @This(), env: *jui.JNIEnv, descriptor: []const u8, args: ?[*]const jui.jvalue) !*Instance {{
+        \\            const method_id = @field(self.Class.methods, "<init>" ++ descriptor) orelse method_id: {{
+        \\                @field(self.Class.methods, "<init>" ++ descriptor) = try env.getMethodId(self.class, "<init>", descriptor);
+        \\                break :method_id @field(self.Class.methods, "<init>" ++ descriptor).?;
+        \\            }};
+        \\            const object = try env.newObject(self.class, method_id, args);
+        \\            return Instance {{ .class = self, .object = object }};
+        \\        }}
+        \\
+    , .{});
+}
+
+fn writeStaticMethod(name: []const u8, methods: []cf.MethodInfo, allocator: std.mem.Allocator, writer: anytype) !void {
+    if (methods.len > 0) try writer.writeAll("\n");
+
+    // TODO: make sure the method_name is a valid identifier string
+
+    var overloads = std.ArrayList(u8).init(allocator);
+    defer overloads.deinit();
+    try overloads.writer().print("        const {s}_overloads = &[_][]const u8{{", .{name});
+
+    var return_types = std.ArrayList(u8).init(allocator);
+    defer return_types.deinit();
+    try return_types.writer().print("        const {s}_return_types = &[_]type{{", .{name});
+
+    for (methods) |method| {
         const descriptor = method.getDescriptor().bytes;
         var descriptor_info = try jui.descriptors.parseString(allocator, descriptor);
+        defer descriptor_info.deinit(allocator);
         std.debug.assert(descriptor_info.* == .method);
-        try std.fmt.format(writer,
-            \\        pub fn @"<init>{[descriptor]s}"(self: @This(), env: *jui.JNIEnv, args: anytype) !*@This() {{
-            \\            const method_id = self.methods.@"<init>{[descriptor]s}" orelse method_id: {{
-            \\                self.methods.@"<init>{[descriptor]s}" = try env.getMethodId(self.class, "<init>", "{[descriptor]s}");
-            \\                break :method_id self.methods.@"<init>{[descriptor]s}".?;
-            \\            }};
-            \\            comptime var arg_array = [_]jui.jvalue{{}};
-            \\            inline for (args) |arg| {{
-            \\                arg_array ++ .{{jui.jvalue.fromValue(arg)}};
-            \\            }}
-            \\            const object = try env.newObject(self.class, method_id, &arg_array);
-            \\            return Instance {{ .class = self, .object = object }};
-            \\        }}
-            \\
-        , .{
-            .descriptor = descriptor,
-        });
+
+        try overloads.writer().writeAll("\n            \"");
+        try overloads.writer().writeAll(descriptor);
+        try overloads.writer().writeAll("\",");
+
+        try return_types.writer().writeAll("\n            ");
+        try return_types.writer().writeAll(descriptorAsTypeString(descriptor_info.*.method.return_type.*));
+        try return_types.writer().writeAll(",");
     }
+
+    try overloads.writer().writeAll("\n        };");
+    try return_types.writer().writeAll("\n        };");
+
+    try std.fmt.format(writer,
+        \\{[overloads]s}
+        \\{[return_types]s}
+        \\        pub fn {[name]s}(self: @This(), env: *jui.JNIEnv, comptime descriptor: []const u8, args: ?[*]const jui.jvalue) !jui.bindings.returnTypeLookup(descriptor, {[name]s}_overloads, {[name]s}_return_types) {{
+        \\            const method_id = @field(self.Class.methods, "{[name]s}" ++ descriptor) orelse method_id: {{
+        \\                @field(self.Class.methods, "{[name]s}" ++ descriptor) = try env.getMethodId(self.class, "{[name]s}", descriptor);
+        \\                break :method_id @field(self.Class.methods, "{[name]s}" ++ descriptor).?;
+        \\            }};
+        \\            const object = try env.newObject(self.class, method_id, arg_array);
+        \\            return Instance {{ .class = self, .object = object }};
+        \\        }}
+        \\
+    , .{
+        .name = name,
+        .overloads = overloads.items,
+        .return_types = return_types.items,
+    });
 }
 
 fn descriptorAsTypeString(descriptor: jui.descriptors.Descriptor) []const u8 {

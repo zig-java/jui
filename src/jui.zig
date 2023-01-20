@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const bindings = @import("bindings.zig");
 pub const descriptors = @import("descriptors.zig");
 pub const Reflector = @import("Reflector.zig");
 const types = @import("types.zig");
