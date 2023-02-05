@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const bindings = @import("bindings.zig");
 pub const descriptors = @import("descriptors.zig");
 pub const Reflector = @import("Reflector.zig");
 const types = @import("types.zig");
@@ -111,7 +112,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
     }
 
     if (se.error_set) |_| {
-        return @call(.{}, function, args) catch |err| {
+        return @call(.auto, function, args) catch |err| {
             var maybe_ert = @errorReturnTrace();
             if (maybe_ert) |ert| {
                 var err_buf = std.ArrayList(u8).init(std.heap.page_allocator);
@@ -133,7 +134,7 @@ pub fn wrapErrors(function: anytype, args: anytype) splitError(@typeInfo(@TypeOf
             return undefined;
         };
     } else {
-        return @call(.{}, function, args);
+        return @call(.auto, function, args);
     }
 }
 

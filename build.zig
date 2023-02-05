@@ -26,12 +26,63 @@ pub fn build(b: *std.build.Builder) void {
         lib.install();
     }
 
+    const java_home = b.env_map.get("JAVA_HOME") orelse @panic("JAVA_HOME not defined.");
+    const libjvm_path = if (builtin.os.tag == .windows) "/lib" else "/lib/server";
+
+    {
+        const exe = b.addExecutable("class2zig", "tools/class2zig.zig");
+
+        if (@hasField(std.build.LibExeObjStep, "use_stage1"))
+            exe.use_stage1 = true;
+
+        exe.addPackagePath("jui", "src/jui.zig");
+        exe.addPackagePath("cf", "dep/cf/cf.zig");
+
+        exe.setTarget(target);
+        exe.setBuildMode(mode);
+        exe.install();
+
+        const run_cmd = exe.run();
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("class2zig", "Run class2zig tool");
+        run_step.dependOn(&run_cmd.step);
+    }
+
+    //Example
+    {
+        const exe = b.addExecutable("guessing_game", "examples/guessing-game/main.zig");
+
+        if (@hasField(std.build.LibExeObjStep, "use_stage1"))
+            exe.use_stage1 = true;
+
+        exe.addPackagePath("jui", "src/jui.zig");
+
+        exe.addLibraryPath(b.pathJoin(&.{ java_home, libjvm_path }));
+        exe.linkSystemLibrary("jvm");
+        exe.linkLibC();
+
+        exe.setTarget(target);
+        exe.setBuildMode(mode);
+        exe.install();
+
+        const run_cmd = exe.run();
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("guessing_game", "Run guessing game example");
+        run_step.dependOn(&run_cmd.step);
+    }
+
     // Tests (it requires a JDK installed)
     {
-        const java_home = b.env_map.get("JAVA_HOME") orelse @panic("JAVA_HOME not defined.");
         const main_tests = b.addTest("src/jui.zig");
 
-        const libjvm_path = if (builtin.os.tag == .windows) "/lib" else "/lib/server";
         if (@hasDecl(@TypeOf(main_tests.*), "addLibraryPath")) {
             main_tests.addLibraryPath(b.pathJoin(&.{ java_home, libjvm_path }));
         } else {
