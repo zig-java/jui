@@ -1571,7 +1571,7 @@ pub const JNIEnv = extern struct {
         array: MapArrayType(native_type),
         start: jsize,
         length: jsize,
-        buffer: [*]MapNativeType(native_type),
+        buffer: [*]const MapNativeType(native_type),
     ) SetPrimitiveArrayRegionError!void {
         (switch (native_type) {
             .boolean => self.interface.SetBooleanArrayRegion,
